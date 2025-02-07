@@ -36,6 +36,7 @@ declare global {
   var PONDER_NAMESPACE_BUILD: NamespaceBuild;
   var PONDER_INDEXING_BUILD: IndexingBuild;
   var PONDER_DATABASE: Database;
+  var COMMON: Common;
 }
 
 const BUILD_ID_VERSION = "1";
@@ -273,6 +274,7 @@ export const createBuild = async ({
     async executeApi({ indexingBuild, database }): Promise<ApiResult> {
       globalThis.PONDER_INDEXING_BUILD = indexingBuild;
       globalThis.PONDER_DATABASE = database;
+      globalThis.COMMON = common;
 
       if (!fs.existsSync(common.options.apiFile)) {
         const error = new BuildError(
