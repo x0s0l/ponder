@@ -1,3 +1,4 @@
+import type { Database } from "@/database/index.js";
 import type { SqlStatements } from "@/drizzle/kit/index.js";
 import type { PonderSyncSchema } from "@/sync-store/encoding.js";
 import type { AbiEvents, AbiFunctions } from "@/sync/abi.js";
@@ -12,23 +13,60 @@ import type {
 import type { Prettify } from "@/types/utils.js";
 import type { Trace as DebugTrace } from "@/utils/debug.js";
 import type { PGliteOptions } from "@/utils/pglite.js";
+import type { RequestQueue } from "@/utils/requestQueue.js";
 import type { PGlite } from "@electric-sql/pglite";
 import type { Hono } from "hono";
 import type { Selectable } from "kysely";
 import type { PoolConfig } from "pg";
 import type {
   Abi,
+  AbiEvent,
+  AbiFunction,
   Address,
   BlockTag,
   Chain,
   Hex,
   LogTopic,
   RpcBlock,
+  Log as RpcLog,
   RpcTransaction,
   RpcTransactionReceipt,
   Transport,
-  Log as ViemLog,
 } from "viem";
+import type { Common } from "./common.js";
+
+export type PonderApp = {
+  common: Common;
+  preBuild: PreBuild;
+  // buildId;
+  namespace: NamespaceBuild;
+  schemaBuild: SchemaBuild;
+  indexingBuild: {
+    network: Network;
+    requestQueue: RequestQueue;
+    filters: Filter[];
+    eventCallbacks: ({
+      fragments: Fragment[];
+      callback: (...args: any) => any;
+      filter: Filter;
+      sourceName: string;
+    } & (
+      | {
+          type: "contract";
+          abiItem: AbiEvent | AbiFunction;
+          metadata: { eventName: string; abi: Abi };
+        }
+      // TODO(kyle) how to designate transaction / transfer / from / to
+      | { type: "account" }
+      | { type: "block" }
+    ))[];
+  }[];
+  database: Database;
+};
+
+export type PerChainPonderApp = Omit<PonderApp, "indexingBuild"> & {
+  indexingBuild: PonderApp["indexingBuild"][number];
+};
 
 // Database
 
@@ -372,7 +410,7 @@ export type Seconds = {
 // Blockchain data
 
 export type SyncBlock = RpcBlock<Exclude<BlockTag, "pending">, true>;
-export type SyncLog = ViemLog<Hex, Hex, false>;
+export type SyncLog = RpcLog<Hex, Hex, false>;
 export type SyncTransaction = RpcTransaction<false>;
 export type SyncTransactionReceipt = RpcTransactionReceipt;
 export type SyncTrace = {
