@@ -1,7 +1,6 @@
 import type { Database } from "@/database/index.js";
 import type { SqlStatements } from "@/drizzle/kit/index.js";
 import type { PonderSyncSchema } from "@/sync-store/encoding.js";
-import type { AbiEvents, AbiFunctions } from "@/sync/abi.js";
 import type {
   Block,
   Log,
@@ -37,35 +36,17 @@ import type { Common } from "./common.js";
 
 export type PonderApp = {
   common: Common;
+  /** Ten character hex string identifier. */
+  buildId: string;
   preBuild: PreBuild;
-  // buildId;
   namespace: NamespaceBuild;
   schemaBuild: SchemaBuild;
-  indexingBuild: {
-    network: Network;
-    requestQueue: RequestQueue;
-    filters: Filter[];
-    eventCallbacks: ({
-      fragments: Fragment[];
-      callback: (...args: any) => any;
-      filter: Filter;
-      sourceName: string;
-    } & (
-      | {
-          type: "contract";
-          abiItem: AbiEvent | AbiFunction;
-          metadata: { eventName: string; abi: Abi };
-        }
-      // TODO(kyle) how to designate transaction / transfer / from / to
-      | { type: "account" }
-      | { type: "block" }
-    ))[];
-  }[];
+  indexingBuild: IndexingBuild[];
   database: Database;
 };
 
 export type PerChainPonderApp = Omit<PonderApp, "indexingBuild"> & {
-  indexingBuild: PonderApp["indexingBuild"][number];
+  indexingBuild: IndexingBuild;
 };
 
 // Database
@@ -78,17 +59,12 @@ export type DatabaseConfig =
 // Indexing
 
 /** Indexing functions as defined in `ponder.on()` */
-export type RawIndexingFunctions = {
+export type IndexingFunctions = {
   /** Name of the event */
   name: string;
   /** Callback function */
   fn: (...args: any) => any;
 }[];
-
-/** Indexing functions for event callbacks */
-export type IndexingFunctions = {
-  [eventName: string]: (...args: any) => any;
-};
 
 // Filters
 
@@ -287,53 +263,6 @@ export type FragmentId =
   /** transfer_{chainId}_{fromAddress}_{toAddress}_{includeReceipts} */
   | `transfer_${number}_${FragmentAddressId}_${FragmentAddressId}_${0 | 1}`;
 
-// Sources
-
-/** Event source that matches {@link Event}s containing an underlying filter and metadata. */
-export type Source = ContractSource | AccountSource | BlockSource;
-
-export type ContractSource<
-  filter extends "log" | "trace" = "log" | "trace",
-  factory extends Factory | undefined = Factory | undefined,
-  fromFactory extends Factory | undefined = Factory | undefined,
-  toFactory extends Factory | undefined = Factory | undefined,
-> = {
-  filter: filter extends "log"
-    ? LogFilter<factory>
-    : TraceFilter<fromFactory, toFactory>;
-} & ContractMetadata;
-
-export type AccountSource<
-  filter extends "transaction" | "transfer" = "transaction" | "transfer",
-  fromFactory extends Factory | undefined = Factory | undefined,
-  toFactory extends Factory | undefined = Factory | undefined,
-> = {
-  filter: filter extends "transaction"
-    ? TransactionFilter<fromFactory, toFactory>
-    : TransferFilter<fromFactory, toFactory>;
-} & AccountMetadata;
-
-export type BlockSource = { filter: BlockFilter } & BlockMetadata;
-
-export type ContractMetadata = {
-  type: "contract";
-  abi: Abi;
-  abiEvents: AbiEvents;
-  abiFunctions: AbiFunctions;
-  name: string;
-  network: Network;
-};
-export type AccountMetadata = {
-  type: "account";
-  name: string;
-  network: Network;
-};
-export type BlockMetadata = {
-  type: "block";
-  name: string;
-  network: Network;
-};
-
 // Network
 
 export type Network = {
@@ -372,14 +301,23 @@ export type SchemaBuild = {
 };
 
 export type IndexingBuild = {
-  /** Ten character hex string identifier. */
-  buildId: string;
-  /** Sources to index. */
-  sources: Source[];
-  /** Networks to index. */
-  networks: Network[];
-  /** Event callbacks for all `sources`.  */
-  indexingFunctions: IndexingFunctions;
+  network: Network;
+  requestQueue: RequestQueue;
+  filters: Filter[];
+  eventCallbacks: ({
+    filter: Filter;
+    // fragments: Fragment[];
+    callback: (...args: any) => any;
+    name: string;
+  } & (
+    | {
+        type: "contract";
+        abiItem: AbiEvent | AbiFunction;
+        metadata: { safeName: string; abi: Abi };
+      }
+    | { type: "account"; direction: "from" | "to" }
+    | { type: "block" }
+  ))[];
 };
 
 export type ApiBuild = {
