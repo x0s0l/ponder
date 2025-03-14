@@ -9,9 +9,9 @@ import { BuildError } from "@/internal/errors.js";
 import type {
   ApiBuild,
   IndexingBuild,
+  IndexingFunctions,
   NamespaceBuild,
   PreBuild,
-  RawIndexingFunctions,
   Schema,
   SchemaBuild,
 } from "@/internal/types.js";
@@ -34,7 +34,7 @@ import { parseViteNodeError } from "./stacktrace.js";
 
 declare global {
   var PONDER_NAMESPACE_BUILD: NamespaceBuild;
-  var PONDER_INDEXING_BUILD: IndexingBuild;
+  var PONDER_INDEXING_BUILD: IndexingBuild[];
   var PONDER_DATABASE: Database;
 }
 
@@ -43,7 +43,7 @@ const BUILD_ID_VERSION = "1";
 type ConfigResult = Result<{ config: Config; contentHash: string }>;
 type SchemaResult = Result<{ schema: Schema; contentHash: string }>;
 type IndexingResult = Result<{
-  indexingFunctions: RawIndexingFunctions;
+  indexingFunctions: IndexingFunctions;
   contentHash: string;
 }>;
 type ApiResult = Result<{ app: Hono }>;
@@ -55,7 +55,7 @@ export type Build = {
   }) => Promise<SchemaResult>;
   executeIndexingFunctions: () => Promise<IndexingResult>;
   executeApi: (params: {
-    indexingBuild: IndexingBuild;
+    indexingBuild: IndexingBuild[];
     database: Database;
   }) => Promise<ApiResult>;
   namespaceCompile: () => Result<NamespaceBuild>;
@@ -63,24 +63,23 @@ export type Build = {
   compileSchema: (params: { schema: Schema }) => Result<SchemaBuild>;
   compileIndexing: (params: {
     configResult: Extract<ConfigResult, { status: "success" }>["result"];
+    indexingResult: Extract<IndexingResult, { status: "success" }>["result"];
+  }) => Promise<Result<IndexingBuild[]>>;
+  compileBuildId: (params: {
+    configResult: Extract<ConfigResult, { status: "success" }>["result"];
     schemaResult: Extract<SchemaResult, { status: "success" }>["result"];
     indexingResult: Extract<IndexingResult, { status: "success" }>["result"];
-  }) => Promise<Result<IndexingBuild>>;
+  }) => string;
   compileApi: (params: {
     apiResult: Extract<ApiResult, { status: "success" }>["result"];
   }) => Promise<Result<ApiBuild>>;
-  startDev: (params: {
-    onReload: (kind: "indexing" | "api") => void;
-  }) => void;
+  startDev: (params: { onReload: (kind: "indexing" | "api") => void }) => void;
 };
 
 export const createBuild = async ({
   common,
   cliOptions,
-}: {
-  common: Common;
-  cliOptions: CliOptions;
-}): Promise<Build> => {
+}: { common: Common; cliOptions: CliOptions }): Promise<Build> => {
   const escapeRegex = /[.*+?^${}()|[\]\\]/g;
 
   const escapedIndexingDir = common.options.indexingDir
@@ -400,12 +399,13 @@ export const createBuild = async ({
         },
       } as const;
     },
-    async compileIndexing({ configResult, schemaResult, indexingResult }) {
+    async compileIndexing({ configResult, indexingResult }) {
       // Validates and build the config
       const buildConfigAndIndexingFunctionsResult =
         await safeBuildConfigAndIndexingFunctions({
+          common,
           config: configResult.config,
-          rawIndexingFunctions: indexingResult.indexingFunctions,
+          indexingFunctions: indexingResult.indexingFunctions,
         });
       if (buildConfigAndIndexingFunctionsResult.status === "error") {
         common.logger.error({
@@ -421,24 +421,19 @@ export const createBuild = async ({
         common.logger[log.level]({ service: "build", msg: log.msg });
       }
 
-      const buildId = createHash("sha256")
+      return {
+        status: "success",
+        result: buildConfigAndIndexingFunctionsResult.indexingBuild,
+      } as const;
+    },
+    compileBuildId({ configResult, schemaResult, indexingResult }) {
+      return createHash("sha256")
         .update(BUILD_ID_VERSION)
         .update(configResult.contentHash)
         .update(schemaResult.contentHash)
         .update(indexingResult.contentHash)
         .digest("hex")
         .slice(0, 10);
-
-      return {
-        status: "success",
-        result: {
-          buildId,
-          sources: buildConfigAndIndexingFunctionsResult.sources,
-          networks: buildConfigAndIndexingFunctionsResult.networks,
-          indexingFunctions:
-            buildConfigAndIndexingFunctionsResult.indexingFunctions,
-        },
-      } as const;
     },
     async compileApi({ apiResult }) {
       for (const route of apiResult.app.routes) {

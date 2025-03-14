@@ -17,7 +17,6 @@ import type {
   TransactionFilter,
   TransferFilter,
 } from "@/internal/types.js";
-import { buildAbiEvents, buildAbiFunctions, buildTopics } from "@/sync/abi.js";
 import {
   defaultBlockFilterInclude,
   defaultLogFilterInclude,
@@ -26,11 +25,21 @@ import {
   defaultTransactionReceiptInclude,
   defaultTransferFilterInclude,
 } from "@/sync/filter.js";
+import { buildTopics, toSafeName } from "@/utils/abi.js";
 import { chains } from "@/utils/chains.js";
 import { dedupe } from "@/utils/dedupe.js";
 import { toLowerCase } from "@/utils/lowercase.js";
 import { createRequestQueue } from "@/utils/requestQueue.js";
-import { BlockNotFoundError, type Hex, type LogTopic, hexToNumber } from "viem";
+import {
+  type AbiEvent,
+  type AbiFunction,
+  BlockNotFoundError,
+  type Hex,
+  type LogTopic,
+  hexToNumber,
+  toEventSelector,
+  toFunctionSelector,
+} from "viem";
 import { buildLogFactory } from "./factory.js";
 
 const flattenSources = <
@@ -327,41 +336,47 @@ export async function buildConfigAndIndexingFunctions({
       }
     }
 
-    // Note: This can probably throw for invalid ABIs. Consider adding explicit ABI validation before this line.
-    const abiEvents = buildAbiEvents({ abi: source.abi });
-    const abiFunctions = buildAbiFunctions({ abi: source.abi });
+    // // Note: This can probably throw for invalid ABIs. Consider adding explicit ABI validation before this line.
 
     const registeredEventSelectors: Hex[] = [];
     // Validate that the registered log events exist in the abi
     for (const logEvent of registeredLogEvents) {
-      const abiEvent = abiEvents.bySafeName[logEvent];
+      const abiEvent = source.abi.find(
+        (item): item is AbiEvent =>
+          item.type === "event" &&
+          toSafeName({ abi: source.abi, item }) === logEvent,
+      );
+
       if (abiEvent === undefined) {
         throw new Error(
-          `Validation failed: Event name for event '${logEvent}' not found in the contract ABI. Got '${logEvent}', expected one of [${Object.keys(
-            abiEvents.bySafeName,
-          )
-            .map((eventName) => `'${eventName}'`)
+          `Validation failed: Event name for event '${logEvent}' not found in the contract ABI. Got '${logEvent}', expected one of [${source.abi
+            .filter((item): item is AbiEvent => item.type === "event")
+            .map((item) => `'${toSafeName({ abi: source.abi, item })}'`)
             .join(", ")}].`,
         );
       }
 
-      registeredEventSelectors.push(abiEvent.selector);
+      registeredEventSelectors.push(toEventSelector(abiEvent));
     }
 
     const registeredFunctionSelectors: Hex[] = [];
     for (const _function of registeredCallTraceEvents) {
-      const abiFunction = abiFunctions.bySafeName[_function];
+      const abiFunction = source.abi.find(
+        (item): item is AbiFunction =>
+          item.type === "function" &&
+          toSafeName({ abi: source.abi, item }) === _function,
+      );
+
       if (abiFunction === undefined) {
         throw new Error(
-          `Validation failed: Function name for function '${_function}' not found in the contract ABI. Got '${_function}', expected one of [${Object.keys(
-            abiFunctions.bySafeName,
-          )
-            .map((eventName) => `'${eventName}'`)
+          `Validation failed: Function name for function '${_function}' not found in the contract ABI. Got '${_function}', expected one of [${source.abi
+            .filter((item): item is AbiFunction => item.type === "function")
+            .map((item) => `'${toSafeName({ abi: source.abi, item })}'`)
             .join(", ")}].`,
         );
       }
 
-      registeredFunctionSelectors.push(abiFunction.selector);
+      registeredFunctionSelectors.push(toFunctionSelector(abiFunction));
     }
 
     const topicsArray: {
@@ -377,15 +392,18 @@ export async function buildConfigAndIndexingFunctions({
         : [source.filter];
 
       for (const filter of eventFilters) {
-        const abiEvent = abiEvents.bySafeName[filter.event];
-        if (!abiEvent) {
+        const abiEvent = source.abi.find(
+          (item): item is AbiEvent =>
+            item.type === "event" &&
+            toSafeName({ abi: source.abi, item }) === filter.event,
+        );
+        if (abiEvent === undefined) {
           throw new Error(
             `Validation failed: Invalid filter for contract '${
               source.name
-            }'. Got event name '${filter.event}', expected one of [${Object.keys(
-              abiEvents.bySafeName,
-            )
-              .map((n) => `'${n}'`)
+            }'. Got event name '${filter.event}', expected one of [${source.abi
+              .filter((item): item is AbiEvent => item.type === "event")
+              .map((item) => `'${toSafeName({ abi: source.abi, item })}'`)
               .join(", ")}].`,
           );
         }
@@ -401,15 +419,6 @@ export async function buildConfigAndIndexingFunctions({
       const excludedRegisteredEventSelectors = registeredEventSelectors.filter(
         (s) => filteredEventSelectors.includes(s) === false,
       );
-
-      // TODO(kyle) is this redundant?
-      for (const selector of filteredEventSelectors) {
-        if (registeredEventSelectors.includes(selector) === false) {
-          throw new Error(
-            `Validation failed: Event selector '${abiEvents.bySelector[selector]?.safeName}' is used in a filter but does not have a corresponding indexing function.`,
-          );
-        }
-      }
 
       if (excludedRegisteredEventSelectors.length > 0) {
         topicsArray.push({
@@ -570,7 +579,11 @@ export async function buildConfigAndIndexingFunctions({
               filter,
               callback: indexingFunction.fn,
               name: source.name,
-              abiItem: abiEvents.bySafeName[eventName]!.item,
+              abiItem: source.abi.find(
+                (item) =>
+                  item.type === "event" &&
+                  toSafeName({ abi: source.abi, item }) === eventName,
+              )! as AbiEvent,
               metadata: { safeName: eventName, abi: source.abi },
             });
           }
@@ -594,7 +607,11 @@ export async function buildConfigAndIndexingFunctions({
               filter,
               callback: indexingFunction.fn,
               name: source.name,
-              abiItem: abiFunctions.bySafeName[functionName]!.item,
+              abiItem: source.abi.find(
+                (item) =>
+                  item.type === "function" &&
+                  toSafeName({ abi: source.abi, item }) === functionName,
+              )! as AbiFunction,
               metadata: { safeName: functionName, abi: source.abi },
             });
           }
