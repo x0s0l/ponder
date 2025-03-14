@@ -1,13 +1,11 @@
 import { runCodegen } from "@/bin/utils/codegen.js";
-import type { Database } from "@/database/index.js";
 import { createIndexingCache } from "@/indexing-store/cache.js";
 import { createHistoricalIndexingStore } from "@/indexing-store/historical.js";
 import { createRealtimeIndexingStore } from "@/indexing-store/realtime.js";
 import { createIndexing } from "@/indexing/index.js";
-import type { Common } from "@/internal/common.js";
 import { FlushError } from "@/internal/errors.js";
 import { getAppProgress } from "@/internal/metrics.js";
-import type { IndexingBuild, PreBuild, SchemaBuild } from "@/internal/types.js";
+import type { PonderApp } from "@/internal/types.js";
 import { createSyncStore } from "@/sync-store/index.js";
 import { type RealtimeEvent, createSync, splitEvents } from "@/sync/index.js";
 import {
@@ -18,95 +16,66 @@ import { chunk } from "@/utils/chunk.js";
 import { formatEta, formatPercentage } from "@/utils/format.js";
 import { createMutex } from "@/utils/mutex.js";
 import { never } from "@/utils/never.js";
-import { createRequestQueue } from "@/utils/requestQueue.js";
 
 /** Starts the sync and indexing services for the specified build. */
-export async function run({
-  common,
-  preBuild,
-  schemaBuild,
-  indexingBuild,
-  database,
-  onFatalError,
-  onReloadableError,
-}: {
-  common: Common;
-  preBuild: PreBuild;
-  schemaBuild: SchemaBuild;
-  indexingBuild: IndexingBuild;
-  database: Database;
-  onFatalError: (error: Error) => void;
-  onReloadableError: (error: Error) => void;
-}) {
-  const crashRecoveryCheckpoint = await database.recoverCheckpoint();
-  await database.migrateSync();
+export async function run(
+  app: PonderApp,
+  {
+    onFatalError,
+    onReloadableError,
+  }: {
+    onFatalError: (error: Error) => void;
+    onReloadableError: (error: Error) => void;
+  },
+) {
+  const crashRecoveryCheckpoint = await app.database.recoverCheckpoint();
+  await app.database.migrateSync();
 
-  runCodegen({ common });
+  runCodegen(app);
 
-  const requestQueues = indexingBuild.networks.map((network) =>
-    createRequestQueue({
-      network,
-      common,
-      concurrency: Math.floor(
-        common.options.rpcMaxConcurrency / indexingBuild.networks.length,
-      ),
-    }),
-  );
-
-  const syncStore = createSyncStore({ common, database });
+  const syncStore = createSyncStore(app);
 
   const realtimeMutex = createMutex();
 
-  const sync = await createSync({
-    common,
-    indexingBuild,
-    requestQueues,
+  const sync = await createSync(app, {
     syncStore,
     onRealtimeEvent: (realtimeEvent) => {
       if (realtimeEvent.type === "reorg") {
         realtimeMutex.clear();
       }
-
       return onRealtimeEvent(realtimeEvent);
     },
     onFatalError,
     crashRecoveryCheckpoint,
-    ordering: preBuild.ordering,
   });
 
-  const indexing = createIndexing({
-    common,
-    indexingBuild,
-    requestQueues,
-    syncStore,
-  });
+  const indexing = createIndexing(app, { syncStore });
 
-  const indexingCache = createIndexingCache({
-    common,
-    schemaBuild,
-    checkpoint: crashRecoveryCheckpoint,
-  });
+  const indexingCache = createIndexingCache(app, { crashRecoveryCheckpoint });
 
-  await database.setStatus(sync.getStatus());
+  await app.database.setStatus(sync.getStatus());
 
-  for (const network of indexingBuild.networks) {
+  for (const { network } of app.indexingBuild) {
     const label = { network: network.name };
-    common.metrics.ponder_historical_total_indexing_seconds.set(
+    app.common.metrics.ponder_historical_total_indexing_seconds.set(
       label,
       Math.max(
         sync.seconds[network.name]!.end - sync.seconds[network.name]!.start,
         0,
       ),
     );
-    common.metrics.ponder_historical_cached_indexing_seconds.set(
+    app.common.metrics.ponder_historical_cached_indexing_seconds.set(
       label,
       Math.max(
         sync.seconds[network.name]!.cached - sync.seconds[network.name]!.start,
         0,
       ),
     );
-    common.metrics.ponder_historical_completed_indexing_seconds.set(label, 0);
-    common.metrics.ponder_indexing_timestamp.set(
+    app.common.metrics.ponder_historical_completed_indexing_seconds.set(
+      label,
+      0,
+    );
+    app.common.metrics.ponder_indexing_timestamp.set(
       label,
       Math.max(
         sync.seconds[network.name]!.cached,
@@ -116,19 +85,19 @@ export async function run({
   }
 
   const startTimestamp = Math.round(Date.now() / 1000);
-  common.metrics.ponder_historical_start_timestamp_seconds.set(startTimestamp);
+  app.common.metrics.ponder_historical_start_timestamp_seconds.set(
+    startTimestamp,
+  );
 
   // Reset the start timestamp so the eta estimate doesn't include
   // the startup time.
-  common.metrics.start_timestamp = Date.now();
+  app.common.metrics.start_timestamp = Date.now();
 
   // If the initial checkpoint is zero, we need to run setup events.
   if (crashRecoveryCheckpoint === ZERO_CHECKPOINT_STRING) {
-    await database.retry(async () => {
-      await database.transaction(async (client, tx) => {
-        const historicalIndexingStore = createHistoricalIndexingStore({
-          common,
-          schemaBuild,
+    await app.database.retry(async () => {
+      await app.database.transaction(async (client, tx) => {
+        const historicalIndexingStore = createHistoricalIndexingStore(app, {
           indexingCache,
           db: tx,
           client,
@@ -148,12 +117,10 @@ export async function run({
   // Run historical indexing until complete.
   for await (const events of sync.getEvents()) {
     if (events.length > 0) {
-      await database.retry(async () => {
-        await database
+      await app.database.retry(async () => {
+        await app.database
           .transaction(async (client, tx) => {
-            const historicalIndexingStore = createHistoricalIndexingStore({
-              common,
-              schemaBuild,
+            const historicalIndexingStore = createHistoricalIndexingStore(app, {
               indexingCache,
               db: tx,
               client,
@@ -175,8 +142,8 @@ export async function run({
                 eventChunk[eventChunk.length - 1]!.checkpoint,
               );
 
-              for (const network of indexingBuild.networks) {
-                common.metrics.ponder_historical_completed_indexing_seconds.set(
+              for (const { network } of app.indexingBuild) {
+                app.common.metrics.ponder_historical_completed_indexing_seconds.set(
                   { network: network.name },
                   Math.max(
                     Number(checkpoint.blockTimestamp) -
@@ -185,28 +152,28 @@ export async function run({
                     0,
                   ),
                 );
-                common.metrics.ponder_indexing_timestamp.set(
+                app.common.metrics.ponder_indexing_timestamp.set(
                   { network: network.name },
                   Number(checkpoint.blockTimestamp),
                 );
               }
 
               // Note: allows for terminal and logs to be updated
-              if (preBuild.databaseConfig.kind === "pglite") {
+              if (app.preBuild.databaseConfig.kind === "pglite") {
                 await new Promise(setImmediate);
               }
             }
 
             // underlying metrics collection is actually synchronous
             // https://github.com/siimon/prom-client/blob/master/lib/histogram.js#L102-L125
-            const { eta, progress } = await getAppProgress(common.metrics);
+            const { eta, progress } = await getAppProgress(app.common.metrics);
             if (eta === undefined || progress === undefined) {
-              common.logger.info({
+              app.common.logger.info({
                 service: "app",
                 msg: `Indexed ${events.length} events`,
               });
             } else {
-              common.logger.info({
+              app.common.logger.info({
                 service: "app",
                 msg: `Indexed ${events.length} events with ${formatPercentage(progress)} complete and ${formatEta(eta * 1_000)} remaining`,
               });
@@ -222,7 +189,7 @@ export async function run({
               throw error;
             }
 
-            await database.finalize({
+            await app.database.finalize({
               checkpoint: events[events.length - 1]!.checkpoint,
               db: tx,
             });
@@ -235,7 +202,7 @@ export async function run({
       indexingCache.commit();
     }
 
-    await database.setStatus(sync.getStatus());
+    await app.database.setStatus(sync.getStatus());
   }
 
   // Persist the indexing store to the db. The `finalized`
@@ -243,13 +210,13 @@ export async function run({
   // have been written because of raw sql access are deleted. Also must truncate
   // the reorg tables that may have been written because of raw sql access.
 
-  common.logger.debug({
+  app.common.logger.debug({
     service: "indexing",
     msg: "Completed all historical events, starting final flush",
   });
 
-  await database.retry(async () => {
-    await database.transaction(async (client, tx) => {
+  await app.database.retry(async () => {
+    await app.database.transaction(async (client, tx) => {
       try {
         await indexingCache.flush({ client });
       } catch (error) {
@@ -260,7 +227,7 @@ export async function run({
         throw error;
       }
 
-      await database.finalize({
+      await app.database.finalize({
         checkpoint: sync.getFinalizedCheckpoint(),
         db: tx,
       });
@@ -273,9 +240,9 @@ export async function run({
   // checkpoint is between the last processed event and the finalized
   // checkpoint.
 
-  for (const network of indexingBuild.networks) {
+  for (const { network } of app.indexingBuild) {
     const label = { network: network.name };
-    common.metrics.ponder_historical_completed_indexing_seconds.set(
+    app.common.metrics.ponder_historical_completed_indexing_seconds.set(
       label,
       Math.max(
         sync.seconds[network.name]!.end -
@@ -284,26 +251,22 @@ export async function run({
         0,
       ),
     );
-    common.metrics.ponder_indexing_timestamp.set(
+    app.common.metrics.ponder_indexing_timestamp.set(
       { network: network.name },
       sync.seconds[network.name]!.end,
     );
   }
 
   const endTimestamp = Math.round(Date.now() / 1000);
-  common.metrics.ponder_historical_end_timestamp_seconds.set(endTimestamp);
+  app.common.metrics.ponder_historical_end_timestamp_seconds.set(endTimestamp);
 
   // Become healthy
-  common.logger.info({
+  app.common.logger.info({
     service: "indexing",
     msg: "Completed historical indexing",
   });
 
-  const realtimeIndexingStore = createRealtimeIndexingStore({
-    common,
-    schemaBuild,
-    database,
-  });
+  const realtimeIndexingStore = createRealtimeIndexingStore(app);
 
   const onRealtimeEvent = realtimeMutex(async (event: RealtimeEvent) => {
     switch (event.type) {
@@ -314,19 +277,19 @@ export async function run({
 
           const perBlockEvents = splitEvents(event.events);
 
-          common.logger.debug({
+          app.common.logger.debug({
             service: "app",
             msg: `Partitioned events into ${perBlockEvents.length} blocks`,
           });
 
           for (const { checkpoint, events } of perBlockEvents) {
-            const network = indexingBuild.networks.find(
-              (network) =>
+            const { network } = app.indexingBuild.find(
+              ({ network }) =>
                 network.chainId ===
                 Number(decodeCheckpoint(checkpoint).chainId),
             )!;
 
-            common.logger.debug({
+            app.common.logger.debug({
               service: "app",
               msg: `Decoded ${events.length} '${network.name}' events for block ${Number(decodeCheckpoint(checkpoint).blockNumber)}`,
             });
@@ -336,7 +299,7 @@ export async function run({
               db: realtimeIndexingStore,
             });
 
-            common.logger.info({
+            app.common.logger.info({
               service: "app",
               msg: `Indexed ${events.length} '${network.name}' events for block ${Number(decodeCheckpoint(checkpoint).blockNumber)}`,
             });
@@ -344,22 +307,25 @@ export async function run({
             if (result.status === "error") onReloadableError(result.error);
 
             // Set reorg table `checkpoint` column for newly inserted rows.
-            await database.complete({ checkpoint, db: database.qb.drizzle });
+            await app.database.complete({
+              checkpoint,
+              db: app.database.qb.drizzle,
+            });
 
-            if (preBuild.ordering === "multichain") {
-              const network = indexingBuild.networks.find(
-                (network) =>
+            if (app.preBuild.ordering === "multichain") {
+              const { network } = app.indexingBuild.find(
+                ({ network }) =>
                   network.chainId ===
                   Number(decodeCheckpoint(checkpoint).chainId),
               )!;
 
-              common.metrics.ponder_indexing_timestamp.set(
+              app.common.metrics.ponder_indexing_timestamp.set(
                 { network: network.name },
                 Number(decodeCheckpoint(checkpoint).blockTimestamp),
               );
             } else {
-              for (const network of indexingBuild.networks) {
-                common.metrics.ponder_indexing_timestamp.set(
+              for (const { network } of app.indexingBuild) {
+                app.common.metrics.ponder_indexing_timestamp.set(
                   { network: network.name },
                   Number(decodeCheckpoint(checkpoint).blockTimestamp),
                 );
@@ -368,25 +334,25 @@ export async function run({
           }
         }
 
-        await database.setStatus(event.status);
+        await app.database.setStatus(event.status);
 
         break;
       }
       case "reorg":
-        await database.removeTriggers();
-        await database.retry(async () => {
-          await database.qb.drizzle.transaction(async (tx) => {
-            await database.revert({ checkpoint: event.checkpoint, tx });
+        await app.database.removeTriggers();
+        await app.database.retry(async () => {
+          await app.database.qb.drizzle.transaction(async (tx) => {
+            await app.database.revert({ checkpoint: event.checkpoint, tx });
           });
         });
-        await database.createTriggers();
+        await app.database.createTriggers();
 
         break;
 
       case "finalize":
-        await database.finalize({
+        await app.database.finalize({
           checkpoint: event.checkpoint,
-          db: database.qb.drizzle,
+          db: app.database.qb.drizzle,
         });
         break;
 
@@ -395,14 +361,14 @@ export async function run({
     }
   });
 
-  await database.createIndexes();
-  await database.createTriggers();
+  await app.database.createIndexes();
+  await app.database.createTriggers();
 
   await sync.startRealtime();
 
-  await database.setStatus(sync.getStatus());
+  await app.database.setStatus(sync.getStatus());
 
-  common.logger.info({
+  app.common.logger.info({
     service: "server",
     msg: "Started returning 200 responses from /ready endpoint",
   });

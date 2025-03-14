@@ -6,6 +6,7 @@ import { MetricsService } from "@/internal/metrics.js";
 import { buildOptions } from "@/internal/options.js";
 import { createShutdown } from "@/internal/shutdown.js";
 import { buildPayload, createTelemetry } from "@/internal/telemetry.js";
+import type { PonderApp } from "@/internal/types.js";
 import { mergeResults } from "@/utils/result.js";
 import type { CliOptions } from "../ponder.js";
 import { createExit } from "../utils/exit.js";
@@ -40,8 +41,8 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
   const metrics = new MetricsService();
   const shutdown = createShutdown();
   const telemetry = createTelemetry({ options, logger, shutdown });
+  const exit = createExit({ logger, telemetry, shutdown });
   const common = { options, logger, metrics, telemetry, shutdown };
-  const exit = createExit({ common });
 
   if (options.version) {
     metrics.ponder_version_info.set(
@@ -55,14 +56,12 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
     );
   }
 
-  const build = await createBuild({ common, cliOptions });
+  const build = await createBuild({ common });
 
   // biome-ignore lint/style/useConst: <explanation>
   let database: Database | undefined;
 
-  // const shutdown = setupShutdown({ common, cleanup });
-
-  const namespaceResult = build.namespaceCompile();
+  const namespaceResult = build.namespaceCompile({ cliOptions });
   if (namespaceResult.status === "error") {
     await exit({ reason: "Failed to initialize namespace", code: 1 });
     return;
@@ -102,7 +101,6 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
 
   const indexingBuildResult = await build.compileIndexing({
     configResult: configResult.result,
-    schemaResult: schemaResult.result,
     indexingResult: indexingResult.result,
   });
 
@@ -111,13 +109,19 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
     return;
   }
 
+  const buildId = build.compileBuildId({
+    configResult: configResult.result,
+    schemaResult: schemaResult.result,
+    indexingResult: indexingResult.result,
+  });
+
   database = await createDatabase({
     common,
     namespace: namespaceResult.result,
     preBuild,
     schemaBuild,
   });
-  await database.migrate(indexingBuildResult.result);
+  await database.migrate({ buildId });
 
   const apiResult = await build.executeApi({
     indexingBuild: indexingBuildResult.result,
@@ -158,12 +162,18 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
     1,
   );
 
-  run({
+  const app = {
     common,
+    buildId,
     database,
     preBuild,
+    namespace: namespaceResult.result,
     schemaBuild,
     indexingBuild: indexingBuildResult.result,
+    apiBuild: apiBuildResult.result,
+  } satisfies PonderApp;
+
+  run(app, {
     onFatalError: () => {
       exit({ reason: "Received fatal error", code: 1 });
     },
@@ -172,11 +182,7 @@ export async function start({ cliOptions }: { cliOptions: CliOptions }) {
     },
   });
 
-  runServer({
-    common,
-    database,
-    apiBuild: apiBuildResult.result,
-  });
+  runServer(app);
 
   return shutdown.kill;
 }

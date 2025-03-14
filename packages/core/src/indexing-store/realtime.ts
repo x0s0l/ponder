@@ -1,8 +1,6 @@
-import type { Database } from "@/database/index.js";
 import { getPrimaryKeyColumns } from "@/drizzle/index.js";
-import type { Common } from "@/internal/common.js";
 import { RecordNotFoundError } from "@/internal/errors.js";
-import type { SchemaBuild } from "@/internal/types.js";
+import type { PonderApp } from "@/internal/types.js";
 import { prettyPrint } from "@/utils/print.js";
 import { startClock } from "@/utils/timer.js";
 import { type QueryWithTypings, type Table, getTableName } from "drizzle-orm";
@@ -14,17 +12,9 @@ import {
 } from "./index.js";
 import { getCacheKey, getWhereCondition } from "./utils.js";
 
-export const createRealtimeIndexingStore = ({
-  common,
-  schemaBuild: { schema },
-  database,
-}: {
-  common: Common;
-  schemaBuild: Pick<SchemaBuild, "schema">;
-  database: Database;
-}): IndexingStore => {
+export const createRealtimeIndexingStore = (app: PonderApp): IndexingStore => {
   const find = (table: Table, key: object) => {
-    return database.qb.drizzle
+    return app.database.qb.drizzle
       .select()
       .from(table)
       .where(getWhereCondition(table, key))
@@ -34,8 +24,8 @@ export const createRealtimeIndexingStore = ({
   return {
     // @ts-ignore
     find: (table: Table, key) =>
-      database.retry(async () => {
-        common.metrics.ponder_indexing_store_queries_total.inc({
+      app.database.retry(async () => {
+        app.common.metrics.ponder_indexing_store_queries_total.inc({
           table: getTableName(table),
           method: "find",
         });
@@ -49,8 +39,8 @@ export const createRealtimeIndexingStore = ({
           // @ts-ignore
           const inner = {
             onConflictDoNothing: () =>
-              database.retry(async () => {
-                common.metrics.ponder_indexing_store_queries_total.inc({
+              app.database.retry(async () => {
+                app.common.metrics.ponder_indexing_store_queries_total.inc({
                   table: getTableName(table),
                   method: "insert",
                 });
@@ -79,7 +69,7 @@ export const createRealtimeIndexingStore = ({
                 };
 
                 try {
-                  return await database.qb.drizzle
+                  return await app.database.qb.drizzle
                     .insert(table)
                     .values(values)
                     .onConflictDoNothing()
@@ -90,8 +80,8 @@ export const createRealtimeIndexingStore = ({
                 }
               }),
             onConflictDoUpdate: (valuesU: any) =>
-              database.retry(async () => {
-                common.metrics.ponder_indexing_store_queries_total.inc({
+              app.database.retry(async () => {
+                app.common.metrics.ponder_indexing_store_queries_total.inc({
                   table: getTableName(table),
                   method: "insert",
                 });
@@ -99,7 +89,7 @@ export const createRealtimeIndexingStore = ({
 
                 if (typeof valuesU === "object") {
                   try {
-                    return await database.qb.drizzle
+                    return await app.database.qb.drizzle
                       .insert(table)
                       .values(values)
                       .onConflictDoUpdate({
@@ -124,7 +114,7 @@ export const createRealtimeIndexingStore = ({
                     if (row === null) {
                       try {
                         rows.push(
-                          await database.qb.drizzle
+                          await app.database.qb.drizzle
                             .insert(table)
                             .values(value)
                             .returning()
@@ -136,7 +126,7 @@ export const createRealtimeIndexingStore = ({
                     } else {
                       try {
                         rows.push(
-                          await database.qb.drizzle
+                          await app.database.qb.drizzle
                             .update(table)
                             .set(valuesU(row))
                             .where(getWhereCondition(table, value))
@@ -154,7 +144,7 @@ export const createRealtimeIndexingStore = ({
 
                   if (row === null) {
                     try {
-                      return await database.qb.drizzle
+                      return await app.database.qb.drizzle
                         .insert(table)
                         .values(values)
                         .returning()
@@ -164,7 +154,7 @@ export const createRealtimeIndexingStore = ({
                     }
                   } else {
                     try {
-                      return await database.qb.drizzle
+                      return await app.database.qb.drizzle
                         .update(table)
                         .set(valuesU(row))
                         .where(getWhereCondition(table, values))
@@ -178,16 +168,16 @@ export const createRealtimeIndexingStore = ({
               }),
             // biome-ignore lint/suspicious/noThenProperty: <explanation>
             then: (onFulfilled, onRejected) =>
-              database
+              app.database
                 .retry(async () => {
-                  common.metrics.ponder_indexing_store_queries_total.inc({
+                  app.common.metrics.ponder_indexing_store_queries_total.inc({
                     table: getTableName(table),
                     method: "insert",
                   });
                   checkOnchainTable(table, "insert");
 
                   try {
-                    return await database.qb.drizzle
+                    return await app.database.qb.drizzle
                       .insert(table)
                       .values(values)
                       .returning()
@@ -220,8 +210,8 @@ export const createRealtimeIndexingStore = ({
     update(table: Table, key) {
       return {
         set: (values: any) =>
-          database.retry(async () => {
-            common.metrics.ponder_indexing_store_queries_total.inc({
+          app.database.retry(async () => {
+            app.common.metrics.ponder_indexing_store_queries_total.inc({
               table: getTableName(table),
               method: "update",
             });
@@ -239,7 +229,7 @@ export const createRealtimeIndexingStore = ({
               }
 
               try {
-                return await database.qb.drizzle
+                return await app.database.qb.drizzle
                   .update(table)
                   .set(values(row))
                   .where(getWhereCondition(table, key))
@@ -250,7 +240,7 @@ export const createRealtimeIndexingStore = ({
               }
             } else {
               try {
-                return await database.qb.drizzle
+                return await app.database.qb.drizzle
                   .update(table)
                   .set(values)
                   .where(getWhereCondition(table, key))
@@ -265,14 +255,14 @@ export const createRealtimeIndexingStore = ({
     },
     // @ts-ignore
     delete: (table: Table, key) =>
-      database.retry(async () => {
-        common.metrics.ponder_indexing_store_queries_total.inc({
+      app.database.retry(async () => {
+        app.common.metrics.ponder_indexing_store_queries_total.inc({
           table: getTableName(table),
           method: "delete",
         });
         checkOnchainTable(table, "delete");
 
-        const deleted = await database.qb.drizzle
+        const deleted = await app.database.qb.drizzle
           .delete(table)
           .where(getWhereCondition(table, key))
           .returning();
@@ -285,17 +275,17 @@ export const createRealtimeIndexingStore = ({
         const query: QueryWithTypings = { sql: _sql, params, typings };
 
         try {
-          return await database.retry(async () => {
+          return await app.database.retry(async () => {
             const endClock = startClock();
 
-            const result = await database.qb.drizzle._.session
+            const result = await app.database.qb.drizzle._.session
               .prepareQuery(query, undefined, undefined, method === "all")
               .execute()
               .catch((error) => {
                 throw parseSqlError(error);
               })
               .finally(() => {
-                common.metrics.ponder_indexing_store_raw_sql_duration.observe(
+                app.common.metrics.ponder_indexing_store_raw_sql_duration.observe(
                   endClock(),
                 );
               });
@@ -306,7 +296,7 @@ export const createRealtimeIndexingStore = ({
           throw parseSqlError(error);
         }
       },
-      { schema, casing: "snake_case" },
+      { schema: app.schemaBuild.schema, casing: "snake_case" },
     ),
     event: undefined,
   };

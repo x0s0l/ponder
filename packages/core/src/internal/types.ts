@@ -42,6 +42,7 @@ export type PonderApp = {
   namespace: NamespaceBuild;
   schemaBuild: SchemaBuild;
   indexingBuild: IndexingBuild[];
+  apiBuild: ApiBuild;
   database: Database;
 };
 
@@ -306,10 +307,11 @@ export type IndexingBuild = {
   filters: Filter[];
   eventCallbacks: ({
     filter: Filter;
-    // fragments: Fragment[];
     callback: (...args: any) => any;
+    // TODO(kyle) name ??
     name: string;
   } & (
+    | { type: "setup" }
     | {
         type: "contract";
         abiItem: AbiEvent | AbiFunction;
@@ -389,9 +391,9 @@ export type InternalTrace = Trace & {
 // Events
 
 export type RawEvent = {
-  chainId: number;
-  sourceIndex: number;
   checkpoint: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
   log?: InternalLog;
   block: InternalBlock;
   transaction?: InternalTransaction;
@@ -419,11 +421,9 @@ export type SetupEvent = {
 
 export type LogEvent = {
   type: "log";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}:${safeName}` */
-  name: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 
   event: {
     id: string;
@@ -437,11 +437,9 @@ export type LogEvent = {
 
 export type BlockEvent = {
   type: "block";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}:block` */
-  name: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 
   event: {
     id: string;
@@ -451,11 +449,9 @@ export type BlockEvent = {
 
 export type TransactionEvent = {
   type: "transaction";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}.{safeName}()` */
-  name: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 
   event: {
     id: string;
@@ -467,11 +463,9 @@ export type TransactionEvent = {
 
 export type TransferEvent = {
   type: "transfer";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}:transfer:from` | `${source.name}:transfer:to` */
-  name: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 
   event: {
     id: string;
@@ -485,11 +479,9 @@ export type TransferEvent = {
 
 export type TraceEvent = {
   type: "trace";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}:transfer:from` | `${source.name}:transfer:to` */
-  name: string;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 
   event: {
     id: string;

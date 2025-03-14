@@ -39,6 +39,7 @@ export async function serve({ cliOptions }: { cliOptions: CliOptions }) {
   const metrics = new MetricsService();
   const shutdown = createShutdown();
   const telemetry = createTelemetry({ options, logger, shutdown });
+  const exit = createExit({ logger, telemetry, shutdown });
   const common = { options, logger, metrics, telemetry, shutdown };
 
   if (options.version) {
@@ -53,10 +54,8 @@ export async function serve({ cliOptions }: { cliOptions: CliOptions }) {
     );
   }
 
-  const build = await createBuild({ common, cliOptions });
-
-  const exit = createExit({ common });
-  const namespaceResult = build.namespaceCompile();
+  const build = await createBuild({ common });
+  const namespaceResult = build.namespaceCompile({ cliOptions });
 
   if (namespaceResult.status === "error") {
     await exit({ reason: "Failed to initialize namespace", code: 1 });
@@ -105,7 +104,6 @@ export async function serve({ cliOptions }: { cliOptions: CliOptions }) {
 
   const indexingBuildResult = await build.compileIndexing({
     configResult: configResult.result,
-    schemaResult: schemaResult.result,
     indexingResult: indexingResult.result,
   });
 
@@ -158,11 +156,7 @@ export async function serve({ cliOptions }: { cliOptions: CliOptions }) {
     1,
   );
 
-  createServer({
-    common,
-    database,
-    apiBuild,
-  });
+  createServer({ common, database, apiBuild });
 
   return shutdown.kill;
 }

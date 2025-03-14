@@ -1,14 +1,6 @@
 import type { IndexingStore } from "@/indexing-store/index.js";
-import type { Common } from "@/internal/common.js";
 import { ShutdownError } from "@/internal/errors.js";
-import type {
-  ContractSource,
-  Event,
-  IndexingBuild,
-  Network,
-  Schema,
-  SetupEvent,
-} from "@/internal/types.js";
+import type { Event, PonderApp, Schema, SetupEvent } from "@/internal/types.js";
 import type { SyncStore } from "@/sync-store/index.js";
 import { isAddressFactory } from "@/sync/filter.js";
 import { cachedTransport } from "@/sync/transport.js";
@@ -21,7 +13,6 @@ import {
   encodeCheckpoint,
 } from "@/utils/checkpoint.js";
 import { prettyPrint } from "@/utils/print.js";
-import type { RequestQueue } from "@/utils/requestQueue.js";
 import { startClock } from "@/utils/timer.js";
 import { type Abi, type Address, createClient } from "viem";
 import { checksumAddress } from "viem";
@@ -58,20 +49,10 @@ export type Indexing = {
   >;
 };
 
-export const createIndexing = ({
-  common,
-  indexingBuild: { sources, networks, indexingFunctions },
-  requestQueues,
-  syncStore,
-}: {
-  common: Common;
-  indexingBuild: Pick<
-    IndexingBuild,
-    "sources" | "networks" | "indexingFunctions"
-  >;
-  requestQueues: RequestQueue[];
-  syncStore: SyncStore;
-}): Indexing => {
+export const createIndexing = (
+  app: PonderApp,
+  { syncStore }: { syncStore: SyncStore },
+): Indexing => {
   let blockNumber: bigint = undefined!;
   const context: Context = {
     network: { name: undefined!, chainId: undefined! },
@@ -81,7 +62,7 @@ export const createIndexing = ({
   };
 
   const eventCount: { [eventName: string]: number } = {};
-  const networkByChainId: { [chainId: number]: Network } = {};
+  // const networkByChainId: { [chainId: number]: Network } = {};
   const clientByChainId: { [chainId: number]: ReadOnlyClient } = {};
   const contractsByChainId: {
     [chainId: number]: Record<
@@ -96,14 +77,19 @@ export const createIndexing = ({
   } = {};
 
   // build eventCount
-  for (const eventName of Object.keys(indexingFunctions)) {
+
+  const eventNames = app.indexingBuild.flatMap(({ eventCallbacks }) =>
+    eventCallbacks.map(({ name }) => name),
+  );
+
+  for (const eventName of eventNames) {
     eventCount[eventName] = 0;
   }
 
   // build networkByChainId
-  for (const network of networks) {
-    networkByChainId[network.chainId] = network;
-  }
+  // for (const network of networks) {
+  //   networkByChainId[network.chainId] = network;
+  // }
 
   // build contractsByChainId
   for (const source of sources) {
@@ -147,7 +133,6 @@ export const createIndexing = ({
   // build clientByChainId
   for (let i = 0; i < networks.length; i++) {
     const network = networks[i]!;
-    const requestQueue = requestQueues[i]!;
     clientByChainId[network.chainId] = createClient({
       transport: cachedTransport({ requestQueue, syncStore }),
       chain: network.chain,
@@ -160,7 +145,7 @@ export const createIndexing = ({
       const metricLabel = {
         event,
       };
-      common.metrics.ponder_indexing_completed_events.set(
+      app.common.metrics.ponder_indexing_completed_events.set(
         metricLabel,
         eventCount[event]!,
       );
@@ -221,21 +206,20 @@ export const createIndexing = ({
   }: { event: Event }): Promise<
     { status: "error"; error: Error } | { status: "success" }
   > => {
-    const indexingFunction = indexingFunctions[event.name];
-    const metricLabel = { event: event.name };
+    const metricLabel = { event: event.eventCallback.name };
 
     try {
       blockNumber = event.event.block.number;
-      context.network.chainId = event.chainId;
-      context.network.name = networkByChainId[event.chainId]!.name;
-      context.client = clientByChainId[event.chainId]!;
-      context.contracts = contractsByChainId[event.chainId]!;
+      context.network.chainId = event.network.chainId;
+      context.network.name = event.network.name;
+      // context.client = clientByChainId[event.eventCallback.network.chainId]!;
+      // context.contracts = contractsByChainId[event.eventCallback.network.chainId]!;
 
       const endClock = startClock();
 
-      await indexingFunction!({ event: event.event, context });
+      await event.eventCallback.callback({ event: event.event, context });
 
-      common.metrics.ponder_indexing_function_duration.observe(
+      app.common.metrics.ponder_indexing_function_duration.observe(
         metricLabel,
         endClock(),
       );
@@ -243,22 +227,22 @@ export const createIndexing = ({
       const error =
         _error instanceof Error ? _error : new Error(String(_error));
 
-      if (common.shutdown.isKilled) {
+      if (app.common.shutdown.isKilled) {
         throw new ShutdownError();
       }
 
-      addStackTrace(error, common.options);
-      addErrorMeta(error, toErrorMeta(event));
+      addStackTrace(app, { error });
+      addErrorMeta({ error, meta: toErrorMeta(event) });
 
       const decodedCheckpoint = decodeCheckpoint(event.checkpoint);
 
-      common.logger.error({
+      app.common.logger.error({
         service: "indexing",
-        msg: `Error while processing '${event.name}' event in '${networkByChainId[event.chainId]!.name}' block ${decodedCheckpoint.blockNumber}`,
+        msg: `Error while processing '${event.eventCallback.name}' event in '${event.network.name}' block ${decodedCheckpoint.blockNumber}`,
         error,
       });
 
-      common.metrics.ponder_indexing_has_error.set(1);
+      app.common.metrics.ponder_indexing_has_error.set(1);
 
       return { status: "error", error };
     }
@@ -316,11 +300,11 @@ export const createIndexing = ({
         const event = events[i]!;
         db.event = event;
 
-        eventCount[event.name]!++;
+        eventCount[event.eventCallback.name]!++;
 
-        common.logger.trace({
+        app.common.logger.trace({
           service: "indexing",
-          msg: `Started indexing function (event="${event.name}", checkpoint=${event.checkpoint})`,
+          msg: `Started indexing function (event="${event.eventCallback.name}", checkpoint=${event.checkpoint})`,
         });
 
         const result = await executeEvent({ event });
@@ -328,9 +312,9 @@ export const createIndexing = ({
           return result;
         }
 
-        common.logger.trace({
+        app.common.logger.trace({
           service: "indexing",
-          msg: `Completed indexing function (event="${event.name}", checkpoint=${event.checkpoint})`,
+          msg: `Completed indexing function (event="${event.eventCallback.name}", checkpoint=${event.checkpoint})`,
         });
       }
 
@@ -396,7 +380,10 @@ export const toErrorMeta = (
   }
 };
 
-export const addErrorMeta = (error: unknown, meta: string | undefined) => {
+export const addErrorMeta = ({
+  error,
+  meta,
+}: { error: unknown; meta: string | undefined }) => {
   // If error isn't an object we can modify, do nothing
   if (typeof error !== "object" || error === null) return;
   if (meta === undefined) return;

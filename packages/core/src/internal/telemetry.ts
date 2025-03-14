@@ -282,7 +282,7 @@ export function buildPayload({
 }: {
   preBuild: PreBuild;
   schemaBuild?: SchemaBuild;
-  indexingBuild?: IndexingBuild;
+  indexingBuild?: IndexingBuild[];
 }) {
   const table_count = schemaBuild ? Object.keys(schemaBuild.schema).length : 0;
   const indexing_function_count = indexingBuild

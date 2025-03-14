@@ -33,11 +33,10 @@ export async function list({ cliOptions }: { cliOptions: CliOptions }) {
   const metrics = new MetricsService();
   const shutdown = createShutdown();
   const telemetry = createTelemetry({ options, logger, shutdown });
+  const exit = createExit({ logger, telemetry, shutdown });
   const common = { options, logger, metrics, telemetry, shutdown };
 
-  const build = await createBuild({ common, cliOptions });
-
-  const exit = createExit({ common });
+  const build = await createBuild({ common });
 
   const configResult = await build.executeConfig();
   if (configResult.status === "error") {

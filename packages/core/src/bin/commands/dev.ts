@@ -69,7 +69,6 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
 
   const build = await createBuild({
     common: { ...common, shutdown },
-    cliOptions,
   });
 
   shutdown.add(async () => {
@@ -81,7 +80,7 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
     createUi({ common: { ...common, shutdown } });
   }
 
-  const exit = createExit({ common: { ...common, shutdown } });
+  const exit = createExit({ logger, telemetry, shutdown });
 
   let isInitialBuild = true;
 
@@ -153,7 +152,6 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
 
         const indexingBuildResult = await build.compileIndexing({
           configResult: configResult.result,
-          schemaResult: schemaResult.result,
           indexingResult: indexingResult.result,
         });
 
@@ -167,13 +165,19 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
         }
         indexingBuild = indexingBuildResult.result;
 
+        const buildId = build.compileBuildId({
+          configResult: configResult.result,
+          schemaResult: schemaResult.result,
+          indexingResult: indexingResult.result,
+        });
+
         database = await createDatabase({
           common: { ...common, shutdown: indexingShutdown },
           namespace,
           preBuild,
           schemaBuild,
         });
-        await database.migrate(indexingBuildResult.result);
+        await database.migrate({ buildId });
 
         const apiResult = await build.executeApi({
           indexingBuild,
@@ -233,20 +237,27 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
           apiBuild: apiBuildResult.result,
         });
 
-        run({
-          common: { ...common, shutdown: indexingShutdown },
-          database,
-          preBuild,
-          schemaBuild,
-          indexingBuild: indexingBuildResult.result,
-          onFatalError: () => {
-            exit({ reason: "Received fatal error", code: 1 });
+        run(
+          {
+            common: { ...common, shutdown: indexingShutdown },
+            buildId,
+            preBuild,
+            namespace,
+            database,
+            schemaBuild,
+            indexingBuild: indexingBuildResult.result,
+            apiBuild: apiBuildResult.result,
           },
-          onReloadableError: (error) => {
-            buildQueue.clear();
-            buildQueue.add({ status: "error", kind: "indexing", error });
+          {
+            onFatalError: () => {
+              exit({ reason: "Received fatal error", code: 1 });
+            },
+            onReloadableError: (error) => {
+              buildQueue.clear();
+              buildQueue.add({ status: "error", kind: "indexing", error });
+            },
           },
-        });
+        );
       } else {
         metrics.resetApiMetrics();
 
@@ -286,7 +297,7 @@ export async function dev({ cliOptions }: { cliOptions: CliOptions }) {
     },
   });
 
-  let indexingBuild: IndexingBuild | undefined;
+  let indexingBuild: IndexingBuild[] | undefined;
   let database: Database | undefined;
 
   const namespace =

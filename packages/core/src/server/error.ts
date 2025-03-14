@@ -1,11 +1,14 @@
 import { addStackTrace } from "@/indexing/addStackTrace.js";
-import type { Common } from "@/internal/common.js";
 import type { BaseError } from "@/internal/errors.js";
+import type { PonderApp } from "@/internal/types.js";
 import { prettyPrint } from "@/utils/print.js";
 import type { Context, HonoRequest } from "hono";
 import { html } from "hono/html";
 
-export const onError = async (_error: Error, c: Context, common: Common) => {
+export const onError = async (
+  app: Pick<PonderApp, "common">,
+  { error: _error, c }: { error: Error; c: Context },
+) => {
   const error = _error as BaseError;
 
   // Find the filename where the error occurred
@@ -22,7 +25,7 @@ export const onError = async (_error: Error, c: Context, common: Common) => {
     return path;
   })();
 
-  addStackTrace(error, common.options);
+  addStackTrace(app, { error });
 
   error.meta = Array.isArray(error.meta) ? error.meta : [];
   error.meta.push(
@@ -33,7 +36,7 @@ export const onError = async (_error: Error, c: Context, common: Common) => {
     })}`,
   );
 
-  common.logger.warn({
+  app.common.logger.warn({
     service: "server",
     msg: `An error occurred while handling a '${c.req.method}' request to the route '${c.req.path}'`,
     error,

@@ -1,4 +1,3 @@
-import type { Common } from "@/internal/common.js";
 import { ShutdownError } from "@/internal/errors.js";
 import type {
   BlockFilter,
@@ -8,8 +7,7 @@ import type {
   Fragment,
   LogFactory,
   LogFilter,
-  Network,
-  Source,
+  PerChainPonderApp,
   SyncBlock,
   SyncLog,
   SyncTrace,
@@ -38,7 +36,6 @@ import {
   intervalDifference,
   intervalRange,
 } from "@/utils/interval.js";
-import type { RequestQueue } from "@/utils/requestQueue.js";
 import {
   _debug_traceBlockByNumber,
   _eth_getBlockByNumber,
@@ -66,17 +63,15 @@ export type HistoricalSync = {
   sync(interval: Interval): Promise<SyncBlock | undefined>;
 };
 
-type CreateHistoricalSyncParameters = {
-  common: Common;
-  sources: Source[];
-  syncStore: SyncStore;
-  network: Network;
-  requestQueue: RequestQueue;
-  onFatalError: (error: Error) => void;
-};
-
 export const createHistoricalSync = async (
-  args: CreateHistoricalSyncParameters,
+  app: PerChainPonderApp,
+  {
+    syncStore,
+    onFatalError,
+  }: {
+    syncStore: SyncStore;
+    onFatalError: (error: Error) => void;
+  },
 ): Promise<HistoricalSync> => {
   /**
    * Flag to fetch transaction receipts through _eth_getBlockReceipts (true) or _eth_getTransactionReceipt (false)
@@ -132,17 +127,17 @@ export const createHistoricalSync = async (
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >;
-  if (args.network.disableCache) {
+  if (app.indexingBuild.network.disableCache) {
     intervalsCache = new Map();
-    for (const { filter } of args.sources) {
+    for (const filter of app.indexingBuild.filters) {
       intervalsCache.set(filter, []);
       for (const { fragment } of getFragments(filter)) {
         intervalsCache.get(filter)!.push({ fragment, intervals: [] });
       }
     }
   } else {
-    intervalsCache = await args.syncStore.getIntervals({
-      filters: args.sources.map(({ filter }) => filter),
+    intervalsCache = await syncStore.getIntervals({
+      filters: app.indexingBuild.filters,
     });
   }
 
@@ -227,7 +222,7 @@ export const createHistoricalSync = async (
     const logs = await Promise.all(
       intervals.flatMap((interval) =>
         addressBatches.map((address) =>
-          _eth_getLogs(args.requestQueue, {
+          _eth_getLogs(app.indexingBuild.requestQueue, {
             address,
             topics,
             fromBlock: interval[0],
@@ -251,10 +246,10 @@ export const createHistoricalSync = async (
               hexToNumber(getLogsErrorResponse.ranges[0]!.toBlock) -
               hexToNumber(getLogsErrorResponse.ranges[0]!.fromBlock);
 
-            args.common.logger.debug({
+            app.common.logger.debug({
               service: "sync",
               msg: `Caught eth_getLogs error on '${
-                args.network.name
+                app.indexingBuild.network.name
               }', updating recommended range to ${range}.`,
             });
 
@@ -275,7 +270,7 @@ export const createHistoricalSync = async (
     for (const log of logs) {
       const id = `${log.blockHash}-${log.logIndex}`;
       if (logIds.has(id)) {
-        args.common.logger.warn({
+        app.common.logger.warn({
           service: "sync",
           msg: `Detected invalid eth_getLogs response. Duplicate log index ${log.logIndex} for block ${log.blockHash}.`,
         });
@@ -319,7 +314,7 @@ export const createHistoricalSync = async (
     if (blockCache.has(number)) {
       block = await blockCache.get(number)!;
     } else {
-      const _block = _eth_getBlockByNumber(args.requestQueue, {
+      const _block = _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
         blockNumber: toHex(number),
       });
       blockCache.set(number, _block);
@@ -340,7 +335,7 @@ export const createHistoricalSync = async (
     if (traceCache.has(block)) {
       return await traceCache.get(block)!;
     } else {
-      const traces = _debug_traceBlockByNumber(args.requestQueue, {
+      const traces = _debug_traceBlockByNumber(app.indexingBuild.requestQueue, {
         blockNumber: block,
       });
       traceCache.set(block, traces);
@@ -371,10 +366,10 @@ export const createHistoricalSync = async (
       blockReceipts = await syncBlockReceipts(block);
     } catch (_error) {
       const error = _error as Error;
-      args.common.logger.warn({
+      app.common.logger.warn({
         service: "sync",
         msg: `Caught eth_getBlockReceipts error on '${
-          args.network.name
+          app.indexingBuild.network.name
         }', switching to eth_getTransactionReceipt method.`,
         error,
       });
@@ -405,9 +400,12 @@ export const createHistoricalSync = async (
     if (transactionReceiptsCache.has(transaction)) {
       return await transactionReceiptsCache.get(transaction)!;
     } else {
-      const receipt = _eth_getTransactionReceipt(args.requestQueue, {
-        hash: transaction,
-      });
+      const receipt = _eth_getTransactionReceipt(
+        app.indexingBuild.requestQueue,
+        {
+          hash: transaction,
+        },
+      );
       transactionReceiptsCache.set(transaction, receipt);
       return await receipt;
     }
@@ -417,9 +415,12 @@ export const createHistoricalSync = async (
     if (blockReceiptsCache.has(block)) {
       return await blockReceiptsCache.get(block)!;
     } else {
-      const blockReceipts = _eth_getBlockReceipts(args.requestQueue, {
-        blockHash: block,
-      });
+      const blockReceipts = _eth_getBlockReceipts(
+        app.indexingBuild.requestQueue,
+        {
+          blockHash: block,
+        },
+      );
       blockReceiptsCache.set(block, blockReceipts);
       return await blockReceipts;
     }
@@ -445,10 +446,10 @@ export const createHistoricalSync = async (
 
     // Note: `factory` must refer to the same original `factory` in `filter`
     // and not be a recovered factory from `recoverFilter`.
-    await args.syncStore.insertChildAddresses({
+    await syncStore.insertChildAddresses({
       factory,
       childAddresses,
-      chainId: args.network.chainId,
+      chainId: app.indexingBuild.network.chainId,
     });
   };
 
@@ -463,7 +464,7 @@ export const createHistoricalSync = async (
     await syncLogFactory(factory, interval);
     // Note: `factory` must refer to the same original `factory` in `filter`
     // and not be a recovered factory from `recoverFilter`.
-    return args.syncStore.getChildAddresses({ factory });
+    return syncStore.getChildAddresses({ factory });
   };
 
   ////////
@@ -474,14 +475,17 @@ export const createHistoricalSync = async (
     // Resolve `filter.address`
     const address = isAddressFactory(filter.address)
       ? await syncAddressFactory(filter.address, interval).then((result) =>
-          result.size >= args.common.options.factoryAddressCountThreshold
+          result.size >= app.common.options.factoryAddressCountThreshold
             ? undefined
             : Array.from(result.keys()),
         )
       : filter.address;
 
     const logs = await syncLogsDynamic({ filter, interval, address });
-    await args.syncStore.insertLogs({ logs, chainId: args.network.chainId });
+    await syncStore.insertLogs({
+      logs,
+      chainId: app.indexingBuild.network.chainId,
+    });
 
     const blocks = await Promise.all(
       logs.map((log) => syncBlock(hexToNumber(log.blockNumber))),
@@ -503,7 +507,7 @@ export const createHistoricalSync = async (
         undefined
       ) {
         if (log.transactionHash === zeroHash) {
-          args.common.logger.warn({
+          app.common.logger.warn({
             service: "sync",
             msg: `Detected log with empty transaction hash in block ${block.hash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
           });
@@ -528,7 +532,7 @@ export const createHistoricalSync = async (
           for (const log of logs) {
             if (log.blockHash === block.hash) {
               if (log.transactionHash === zeroHash) {
-                args.common.logger.warn({
+                app.common.logger.warn({
                   service: "sync",
                   msg: `Detected log with empty transaction hash in block ${log.blockHash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
                 });
@@ -542,9 +546,9 @@ export const createHistoricalSync = async (
         }),
       ).then((receipts) => receipts.flat());
 
-      await args.syncStore.insertTransactionReceipts({
+      await syncStore.insertTransactionReceipts({
         transactionReceipts,
-        chainId: args.network.chainId,
+        chainId: app.indexingBuild.network.chainId,
       });
     }
   };
@@ -629,9 +633,9 @@ export const createHistoricalSync = async (
       }),
     ).then((receipts) => receipts.flat());
 
-    await args.syncStore.insertTransactionReceipts({
+    await syncStore.insertTransactionReceipts({
       transactionReceipts,
-      chainId: args.network.chainId,
+      chainId: app.indexingBuild.network.chainId,
     });
   };
 
@@ -724,9 +728,9 @@ export const createHistoricalSync = async (
       }),
     ).then((traces) => traces.flat());
 
-    await args.syncStore.insertTraces({
+    await syncStore.insertTraces({
       traces,
-      chainId: args.network.chainId,
+      chainId: app.indexingBuild.network.chainId,
     });
 
     if (shouldGetTransactionReceipt(filter)) {
@@ -741,9 +745,9 @@ export const createHistoricalSync = async (
         }),
       ).then((receipts) => receipts.flat());
 
-      await args.syncStore.insertTransactionReceipts({
+      await syncStore.insertTransactionReceipts({
         transactionReceipts,
-        chainId: args.network.chainId,
+        chainId: app.indexingBuild.network.chainId,
       });
     }
   };
@@ -850,17 +854,17 @@ export const createHistoricalSync = async (
           } catch (_error) {
             const error = _error as Error;
 
-            if (args.common.shutdown.isKilled) {
+            if (app.common.shutdown.isKilled) {
               throw new ShutdownError();
             }
 
-            args.common.logger.error({
+            app.common.logger.error({
               service: "sync",
-              msg: `Fatal error: Unable to sync '${args.network.name}' from ${interval[0]} to ${interval[1]}.`,
+              msg: `Fatal error: Unable to sync '${app.indexingBuild.network.name}' from ${interval[0]} to ${interval[1]}.`,
               error,
             });
 
-            args.onFatalError(error);
+            onFatalError(error);
 
             return;
           }
@@ -872,23 +876,26 @@ export const createHistoricalSync = async (
       const blocks = await Promise.all(blockCache.values());
 
       await Promise.all([
-        args.syncStore.insertBlocks({ blocks, chainId: args.network.chainId }),
-        args.syncStore.insertTransactions({
+        syncStore.insertBlocks({
+          blocks,
+          chainId: app.indexingBuild.network.chainId,
+        }),
+        syncStore.insertTransactions({
           transactions: blocks.flatMap((block) =>
             block.transactions.filter(({ hash }) =>
               transactionsCache.has(hash),
             ),
           ),
-          chainId: args.network.chainId,
+          chainId: app.indexingBuild.network.chainId,
         }),
       ]);
 
       // Add corresponding intervals to the sync-store
       // Note: this should happen after so the database doesn't become corrupted
-      if (args.network.disableCache === false) {
-        await args.syncStore.insertIntervals({
+      if (app.indexingBuild.network.disableCache === false) {
+        await syncStore.insertIntervals({
           intervals: intervalsToSync,
-          chainId: args.network.chainId,
+          chainId: app.indexingBuild.network.chainId,
         });
       }
 

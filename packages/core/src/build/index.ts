@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { CliOptions } from "@/bin/ponder.js";
@@ -58,7 +58,9 @@ export type Build = {
     indexingBuild: IndexingBuild[];
     database: Database;
   }) => Promise<ApiResult>;
-  namespaceCompile: () => Result<NamespaceBuild>;
+  namespaceCompile: (params: {
+    cliOptions: CliOptions;
+  }) => Result<NamespaceBuild>;
   preCompile: (params: { config: Config }) => Result<PreBuild>;
   compileSchema: (params: { schema: Schema }) => Result<SchemaBuild>;
   compileIndexing: (params: {
@@ -78,8 +80,7 @@ export type Build = {
 
 export const createBuild = async ({
   common,
-  cliOptions,
-}: { common: Common; cliOptions: CliOptions }): Promise<Build> => {
+}: { common: Common }): Promise<Build> => {
   const escapeRegex = /[.*+?^${}()|[\]\\]/g;
 
   const escapedIndexingDir = common.options.indexingDir
@@ -180,7 +181,8 @@ export const createBuild = async ({
 
       const config = executeResult.exports.default as Config;
 
-      const contentHash = createHash("sha256")
+      const contentHash = crypto
+        .createHash("sha256")
         .update(serialize(config))
         .digest("hex");
 
@@ -212,7 +214,10 @@ export const createBuild = async ({
         status: "success",
         result: {
           schema,
-          contentHash: createHash("sha256").update(contents).digest("hex"),
+          contentHash: crypto
+            .createHash("sha256")
+            .update(contents)
+            .digest("hex"),
         },
       } as const;
     },
@@ -244,7 +249,7 @@ export const createBuild = async ({
 
       // Note that we are only hashing the file contents, not the exports. This is
       // different from the config/schema, where we include the serializable object itself.
-      const hash = createHash("sha256");
+      const hash = crypto.createHash("sha256");
       for (const file of files) {
         try {
           const contents = fs.readFileSync(file, "utf-8");
@@ -328,7 +333,7 @@ export const createBuild = async ({
         result: { app },
       };
     },
-    namespaceCompile() {
+    namespaceCompile({ cliOptions }) {
       if (
         cliOptions.schema === undefined &&
         process.env.DATABASE_SCHEMA === undefined
@@ -427,7 +432,8 @@ export const createBuild = async ({
       } as const;
     },
     compileBuildId({ configResult, schemaResult, indexingResult }) {
-      return createHash("sha256")
+      return crypto
+        .createHash("sha256")
         .update(BUILD_ID_VERSION)
         .update(configResult.contentHash)
         .update(schemaResult.contentHash)

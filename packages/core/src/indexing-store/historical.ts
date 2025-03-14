@@ -1,6 +1,5 @@
-import type { Common } from "@/internal/common.js";
 import { RecordNotFoundError } from "@/internal/errors.js";
-import type { Event, Schema, SchemaBuild } from "@/internal/types.js";
+import type { Event, PonderApp, Schema } from "@/internal/types.js";
 import type { Drizzle } from "@/types/db.js";
 import { prettyPrint } from "@/utils/print.js";
 import { startClock } from "@/utils/timer.js";
@@ -15,25 +14,24 @@ import {
   parseSqlError,
 } from "./index.js";
 
-export const createHistoricalIndexingStore = ({
-  common,
-  schemaBuild: { schema },
-  indexingCache,
-  db,
-  client,
-}: {
-  common: Common;
-  schemaBuild: Pick<SchemaBuild, "schema">;
-  indexingCache: IndexingCache;
-  db: Drizzle<Schema>;
-  client: PoolClient | PGlite;
-}): IndexingStore => {
+export const createHistoricalIndexingStore = (
+  app: PonderApp,
+  {
+    indexingCache,
+    db,
+    client,
+  }: {
+    indexingCache: IndexingCache;
+    db: Drizzle<Schema>;
+    client: PoolClient | PGlite;
+  },
+): IndexingStore => {
   let event: Event | undefined;
 
   return {
     // @ts-ignore
     find: (table: Table, key) => {
-      common.metrics.ponder_indexing_store_queries_total.inc({
+      app.common.metrics.ponder_indexing_store_queries_total.inc({
         table: getTableName(table),
         method: "find",
       });
@@ -48,7 +46,7 @@ export const createHistoricalIndexingStore = ({
           // @ts-ignore
           const inner = {
             onConflictDoNothing: async () => {
-              common.metrics.ponder_indexing_store_queries_total.inc({
+              app.common.metrics.ponder_indexing_store_queries_total.inc({
                 table: getTableName(table),
                 method: "insert",
               });
@@ -99,7 +97,7 @@ export const createHistoricalIndexingStore = ({
               }
             },
             onConflictDoUpdate: async (valuesU: any) => {
-              common.metrics.ponder_indexing_store_queries_total.inc({
+              app.common.metrics.ponder_indexing_store_queries_total.inc({
                 table: getTableName(table),
                 method: "insert",
               });
@@ -187,7 +185,7 @@ export const createHistoricalIndexingStore = ({
             },
             // biome-ignore lint/suspicious/noThenProperty: <explanation>
             then: (onFulfilled, onRejected) => {
-              common.metrics.ponder_indexing_store_queries_total.inc({
+              app.common.metrics.ponder_indexing_store_queries_total.inc({
                 table: getTableName(table),
                 method: "insert",
               });
@@ -247,7 +245,7 @@ export const createHistoricalIndexingStore = ({
     update(table: Table, key) {
       return {
         set: async (values: any) => {
-          common.metrics.ponder_indexing_store_queries_total.inc({
+          app.common.metrics.ponder_indexing_store_queries_total.inc({
             table: getTableName(table),
             method: "update",
           });
@@ -287,7 +285,7 @@ export const createHistoricalIndexingStore = ({
     },
     // @ts-ignore
     delete: async (table: Table, key) => {
-      common.metrics.ponder_indexing_store_queries_total.inc({
+      app.common.metrics.ponder_indexing_store_queries_total.inc({
         table: getTableName(table),
         method: "delete",
       });
@@ -314,12 +312,12 @@ export const createHistoricalIndexingStore = ({
         } catch (error) {
           throw parseSqlError(error);
         } finally {
-          common.metrics.ponder_indexing_store_raw_sql_duration.observe(
+          app.common.metrics.ponder_indexing_store_raw_sql_duration.observe(
             endClock(),
           );
         }
       },
-      { schema, casing: "snake_case" },
+      { schema: app.schemaBuild.schema, casing: "snake_case" },
     ),
     set event(_event: Event | undefined) {
       event = _event;

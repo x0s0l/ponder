@@ -3,9 +3,8 @@ import { pipeline } from "node:stream/promises";
 import { getPrimaryKeyColumns } from "@/drizzle/index.js";
 import { getColumnCasing } from "@/drizzle/kit/index.js";
 import { addErrorMeta, toErrorMeta } from "@/indexing/index.js";
-import type { Common } from "@/internal/common.js";
 import { FlushError } from "@/internal/errors.js";
-import type { Event, Schema, SchemaBuild } from "@/internal/types.js";
+import type { Event, PonderApp, Schema } from "@/internal/types.js";
 import type { Drizzle } from "@/types/db.js";
 import { ZERO_CHECKPOINT_STRING } from "@/utils/checkpoint.js";
 import { prettyPrint } from "@/utils/print.js";
@@ -229,15 +228,10 @@ export const recoverBatchError = async <T>(
   }
 };
 
-export const createIndexingCache = ({
-  common,
-  schemaBuild: { schema },
-  checkpoint,
-}: {
-  common: Common;
-  schemaBuild: Pick<SchemaBuild, "schema">;
-  checkpoint: string;
-}): IndexingCache => {
+export const createIndexingCache = (
+  app: PonderApp,
+  { crashRecoveryCheckpoint }: { crashRecoveryCheckpoint: string },
+): IndexingCache => {
   const cache: Cache = new Map();
   const spillover: Cache = new Map();
   const insertBuffer: Buffer = new Map();
@@ -245,7 +239,7 @@ export const createIndexingCache = ({
 
   const primaryKeyCache = new Map<Table, [string, Column][]>();
 
-  let isCacheComplete = checkpoint === ZERO_CHECKPOINT_STRING;
+  let isCacheComplete = crashRecoveryCheckpoint === ZERO_CHECKPOINT_STRING;
 
   let cacheBytes = 0;
   let spilloverBytes = 0;
@@ -253,14 +247,14 @@ export const createIndexingCache = ({
   // LRU counter
   let totalCacheOps = 0;
 
-  common.logger.debug({
+  app.common.logger.debug({
     service: "indexing",
     msg: `Using a ${Math.round(
-      common.options.indexingCacheMaxBytes / (1024 * 1024),
+      app.common.options.indexingCacheMaxBytes / (1024 * 1024),
     )} MB indexing cache`,
   });
 
-  for (const table of Object.values(schema).filter(
+  for (const table of Object.values(app.schemaBuild.schema).filter(
     (table): table is PgTableWithColumns<TableConfig> => is(table, PgTable),
   )) {
     cache.set(table, new Map());
@@ -294,7 +288,7 @@ export const createIndexingCache = ({
         updateBuffer.get(table)!.get(ck) ?? insertBuffer.get(table)!.get(ck);
 
       if (bufferEntry) {
-        common.metrics.ponder_indexing_cache_requests_total.inc({
+        app.common.metrics.ponder_indexing_cache_requests_total.inc({
           table: getTableName(table),
           type: "hit",
         });
@@ -307,7 +301,7 @@ export const createIndexingCache = ({
         entry.operationIndex = totalCacheOps++;
 
         if (entry.row) {
-          common.metrics.ponder_indexing_cache_requests_total.inc({
+          app.common.metrics.ponder_indexing_cache_requests_total.inc({
             table: getTableName(table),
             type: "hit",
           });
@@ -316,14 +310,14 @@ export const createIndexingCache = ({
       }
 
       if (isCacheComplete) {
-        common.metrics.ponder_indexing_cache_requests_total.inc({
+        app.common.metrics.ponder_indexing_cache_requests_total.inc({
           table: getTableName(table),
           type: "hit",
         });
         return null;
       }
 
-      common.metrics.ponder_indexing_cache_requests_total.inc({
+      app.common.metrics.ponder_indexing_cache_requests_total.inc({
         table: getTableName(table),
         type: "miss",
       });
@@ -347,7 +341,7 @@ export const createIndexingCache = ({
           return row;
         });
 
-      common.metrics.ponder_indexing_cache_query_duration.observe(
+      app.common.metrics.ponder_indexing_cache_query_duration.observe(
         {
           table: getTableName(table),
           method: "find",
@@ -440,23 +434,26 @@ export const createIndexingCache = ({
               error.stack = undefined;
 
               if (result.value.metadata.event) {
-                addErrorMeta(
+                addErrorMeta({
                   error,
-                  `db.insert arguments:\n${prettyPrint(result.value.row)}`,
-                );
-                addErrorMeta(error, toErrorMeta(result.value.metadata.event));
-                common.logger.error({
+                  meta: `db.insert arguments:\n${prettyPrint(result.value.row)}`,
+                });
+                addErrorMeta({
+                  error,
+                  meta: toErrorMeta(result.value.metadata.event),
+                });
+                app.common.logger.error({
                   service: "indexing",
                   msg: `Error while processing ${getTableName(
                     table,
-                  )}.insert() in event '${result.value.metadata.event.name}'`,
+                  )}.insert() in event '${result.value.metadata.event.eventCallback.name}'`,
                   error,
                 });
               }
               throw new FlushError(error.message);
             })
             .finally(() => {
-              common.metrics.ponder_indexing_cache_query_duration.observe(
+              app.common.metrics.ponder_indexing_cache_query_duration.observe(
                 {
                   table: getTableName(table),
                   method: "flush",
@@ -477,7 +474,7 @@ export const createIndexingCache = ({
           }
           insertBuffer.get(table)!.clear();
 
-          common.logger.debug({
+          app.common.logger.debug({
             service: "database",
             msg: `Inserted ${insertValues.length} '${getTableName(
               table,
@@ -561,10 +558,10 @@ export const createIndexingCache = ({
               error = parseSqlError(result.error);
               error.stack = undefined;
 
-              addErrorMeta(
+              addErrorMeta({
                 error,
-                `db.update arguments:\n${prettyPrint(result.value.row)}`,
-              );
+                meta: `db.update arguments:\n${prettyPrint(result.value.row)}`,
+              });
 
               throw error;
             });
@@ -573,7 +570,7 @@ export const createIndexingCache = ({
             // @ts-ignore
             await client.query(truncateQuery);
           } finally {
-            common.metrics.ponder_indexing_cache_query_duration.observe(
+            app.common.metrics.ponder_indexing_cache_query_duration.observe(
               {
                 table: getTableName(table),
                 method: "flush",
@@ -592,7 +589,7 @@ export const createIndexingCache = ({
           }
           updateBuffer.get(table)!.clear();
 
-          common.logger.debug({
+          app.common.logger.debug({
             service: "database",
             msg: `Updated ${updateValues.length} '${getTableName(table)}' rows`,
           });
@@ -621,9 +618,12 @@ export const createIndexingCache = ({
 
       const flushIndex =
         totalCacheOps -
-        cacheSize * (1 - common.options.indexingCacheEvictRatio);
+        cacheSize * (1 - app.common.options.indexingCacheEvictRatio);
 
-      if (cacheBytes + spilloverBytes > common.options.indexingCacheMaxBytes) {
+      if (
+        cacheBytes + spilloverBytes >
+        app.common.options.indexingCacheMaxBytes
+      ) {
         isCacheComplete = false;
 
         let rowCount = 0;
@@ -638,7 +638,7 @@ export const createIndexingCache = ({
           }
         }
 
-        common.logger.debug({
+        app.common.logger.debug({
           service: "indexing",
           msg: `Evicted ${rowCount} rows from the cache`,
         });

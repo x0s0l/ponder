@@ -1,23 +1,25 @@
 import os from "node:os";
 import readline from "node:readline";
-import type { Common } from "@/internal/common.js";
 import { ShutdownError } from "@/internal/errors.js";
+import type { Logger } from "@/internal/logger.js";
+import type { Shutdown } from "@/internal/shutdown.js";
+import type { Telemetry } from "@/internal/telemetry.js";
 
 const SHUTDOWN_GRACE_PERIOD_MS = 5_000;
 
 /** Sets up shutdown handlers for the process. Accepts additional cleanup logic to run. */
 export const createExit = ({
-  common,
-}: {
-  common: Pick<Common, "logger" | "telemetry" | "shutdown">;
-}) => {
+  logger,
+  telemetry,
+  shutdown,
+}: { logger: Logger; telemetry: Telemetry; shutdown: Shutdown }) => {
   let isShuttingDown = false;
 
   const exit = async ({ reason, code }: { reason: string; code: 0 | 1 }) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     const timeout = setTimeout(async () => {
-      common.logger.fatal({
+      logger.fatal({
         service: "process",
         msg: "Failed to shutdown within 5 seconds, terminating (exit code 1)",
       });
@@ -25,17 +27,17 @@ export const createExit = ({
     }, SHUTDOWN_GRACE_PERIOD_MS);
 
     if (reason !== undefined) {
-      common.logger.warn({
+      logger.warn({
         service: "process",
         msg: `${reason}, starting shutdown sequence`,
       });
     }
-    common.telemetry.record({
+    telemetry.record({
       name: "lifecycle:session_end",
       properties: { duration_seconds: process.uptime() },
     });
 
-    await common.shutdown.kill();
+    await shutdown.kill();
     clearTimeout(timeout);
 
     if (process.stdin.isTTY) {
@@ -61,7 +63,7 @@ export const createExit = ({
   process.on("SIGQUIT", () => exit({ reason: "Received SIGQUIT", code: 0 }));
   process.on("uncaughtException", (error: Error) => {
     if (error instanceof ShutdownError) return;
-    common.logger.error({
+    logger.error({
       service: "process",
       msg: "Caught uncaughtException event",
       error,
@@ -70,7 +72,7 @@ export const createExit = ({
   });
   process.on("unhandledRejection", (error: Error) => {
     if (error instanceof ShutdownError) return;
-    common.logger.error({
+    logger.error({
       service: "process",
       msg: "Caught unhandledRejection event",
       error,
