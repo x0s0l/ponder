@@ -298,8 +298,12 @@ export const createSync = async (
     checkpoint,
     network,
   }: { checkpoint: string; network: Network }) => {
+    const perChainApp = Array.from(perChainSync.keys()).find(
+      (perChainApp) => perChainApp.indexingBuild.network === network,
+    )!;
+
     const localBlock = perChainSync
-      .get(network)!
+      .get(perChainApp)!
       .realtimeSync.unfinalizedBlocks.findLast(
         (block) =>
           encodeCheckpoint(blockToCheckpoint(block, network.chainId, "up")) <=
@@ -320,7 +324,7 @@ export const createSync = async (
     );
 
     const eventGenerators = Array.from(perChainSync.entries()).map(
-      ([app, { syncProgress, historicalSync }]) => {
+      ([perChainApp, { syncProgress, historicalSync }]) => {
         async function* decodeEventGenerator(
           eventGenerator: AsyncGenerator<{
             events: RawEvent[];
@@ -328,10 +332,12 @@ export const createSync = async (
           }>,
         ) {
           for await (const { events, checkpoint } of eventGenerator) {
-            const decodedEvents = decodeEvents(app, { rawEvents: events });
+            const decodedEvents = decodeEvents(perChainApp, {
+              rawEvents: events,
+            });
             app.common.logger.debug({
               service: "app",
-              msg: `Decoded ${decodedEvents.length} '${app.indexingBuild.network.name}' events`,
+              msg: `Decoded ${decodedEvents.length} '${perChainApp.indexingBuild.network.name}' events`,
             });
             yield { events: decodedEvents, checkpoint };
           }
@@ -371,18 +377,18 @@ export const createSync = async (
           }
         }
 
-        const localSyncGenerator = getLocalSyncGenerator(app, {
+        const localSyncGenerator = getLocalSyncGenerator(perChainApp, {
           syncProgress,
           historicalSync,
         });
 
-        const localEventGenerator = getLocalEventGenerator(app, {
+        const localEventGenerator = getLocalEventGenerator(perChainApp, {
           syncStore,
           localSyncGenerator,
-          from: getMultichainCheckpoint(app, { tag: "start" })!,
+          from: getMultichainCheckpoint(perChainApp, { tag: "start" })!,
           to: min(
-            getMultichainCheckpoint(app, { tag: "finalized" })!,
-            getMultichainCheckpoint(app, { tag: "end" })!,
+            getMultichainCheckpoint(perChainApp, { tag: "finalized" })!,
+            getMultichainCheckpoint(perChainApp, { tag: "end" })!,
           ),
           limit: Math.round(
             app.common.options.syncEventsQuerySize /
@@ -432,7 +438,7 @@ export const createSync = async (
   const latencyTimers = new Map<string, () => number>();
 
   const onRealtimeSyncEvent = (
-    app: PerChainPonderApp,
+    perChainApp: PerChainPonderApp,
     {
       event,
       syncProgress,
@@ -446,7 +452,7 @@ export const createSync = async (
   ): void => {
     switch (event.type) {
       case "block": {
-        const events = buildEvents(app, {
+        const events = buildEvents(perChainApp, {
           blockData: {
             block: syncBlockToInternal({ block: event.block }),
             logs: event.logs.map((log) => syncLogToInternal({ log })),
@@ -470,22 +476,24 @@ export const createSync = async (
           childAddresses: realtimeSync.childAddresses,
         });
 
-        app.common.logger.debug({
+        perChainApp.common.logger.debug({
           service: "sync",
-          msg: `Extracted ${events.length} '${app.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
+          msg: `Extracted ${events.length} '${perChainApp.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
         });
 
-        const decodedEvents = decodeEvents(app, { rawEvents: events });
-        app.common.logger.debug({
+        const decodedEvents = decodeEvents(perChainApp, { rawEvents: events });
+        perChainApp.common.logger.debug({
           service: "sync",
-          msg: `Decoded ${decodedEvents.length} '${app.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
+          msg: `Decoded ${decodedEvents.length} '${perChainApp.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
         });
 
-        if (app.preBuild.ordering === "multichain") {
+        if (perChainApp.preBuild.ordering === "multichain") {
           // Note: `checkpoints.current` not used in multichain ordering
-          const checkpoint = getMultichainCheckpoint(app, { tag: "current" })!;
+          const checkpoint = getMultichainCheckpoint(perChainApp, {
+            tag: "current",
+          })!;
 
-          status[app.indexingBuild.network.name]!.block = {
+          status[perChainApp.indexingBuild.network.name]!.block = {
             timestamp: hexToNumber(event.block.timestamp),
             number: hexToNumber(event.block.number),
           };
@@ -494,9 +502,9 @@ export const createSync = async (
           pendingEvents = [];
           executedEvents = executedEvents.concat(readyEvents);
 
-          app.common.logger.debug({
+          perChainApp.common.logger.debug({
             service: "sync",
-            msg: `Sequenced ${readyEvents.length} '${app.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
+            msg: `Sequenced ${readyEvents.length} '${perChainApp.indexingBuild.network.name}' events for block ${hexToNumber(event.block.number)}`,
           });
 
           onRealtimeEvent({
@@ -506,12 +514,12 @@ export const createSync = async (
             events: readyEvents.sort((a, b) =>
               a.checkpoint < b.checkpoint ? -1 : 1,
             ),
-            network: app.indexingBuild.network,
+            network: perChainApp.indexingBuild.network,
           }).then(() => {
             // update `ponder_realtime_latency` metric
             if (event.endClock) {
-              app.common.metrics.ponder_realtime_latency.observe(
-                { network: app.indexingBuild.network.name },
+              perChainApp.common.metrics.ponder_realtime_latency.observe(
+                { network: perChainApp.indexingBuild.network.name },
                 event.endClock(),
               );
             }
@@ -526,7 +534,7 @@ export const createSync = async (
               encodeCheckpoint(
                 blockToCheckpoint(
                   event.block,
-                  app.indexingBuild.network.chainId,
+                  perChainApp.indexingBuild.network.chainId,
                   "up",
                 ),
               ),
@@ -549,7 +557,7 @@ export const createSync = async (
               .filter(({ checkpoint }) => checkpoint > to);
             executedEvents = executedEvents.concat(readyEvents);
 
-            app.common.logger.debug({
+            perChainApp.common.logger.debug({
               service: "sync",
               msg: `Sequenced ${readyEvents.length} events`,
             });
@@ -561,13 +569,13 @@ export const createSync = async (
               events: readyEvents.sort((a, b) =>
                 a.checkpoint < b.checkpoint ? -1 : 1,
               ),
-              network: app.indexingBuild.network,
+              network: perChainApp.indexingBuild.network,
             }).then(() => {
               // update `ponder_realtime_latency` metric
               for (const [checkpoint, timer] of latencyTimers) {
                 if (checkpoint > from && checkpoint <= to) {
-                  app.common.metrics.ponder_realtime_latency.observe(
-                    { network: app.indexingBuild.network.name },
+                  perChainApp.common.metrics.ponder_realtime_latency.observe(
+                    { network: perChainApp.indexingBuild.network.name },
                     timer(),
                   );
                 }
@@ -587,16 +595,16 @@ export const createSync = async (
         const to = getOmnichainCheckpoint({ tag: "finalized" })!;
 
         if (
-          app.preBuild.ordering === "omnichain" &&
+          perChainApp.preBuild.ordering === "omnichain" &&
           getChainCheckpoint({
             syncProgress,
-            network: app.indexingBuild.network,
+            network: perChainApp.indexingBuild.network,
             tag: "finalized",
           })! > getOmnichainCheckpoint({ tag: "current" })!
         ) {
-          app.common.logger.warn({
+          perChainApp.common.logger.warn({
             service: "sync",
-            msg: `Finalized '${app.indexingBuild.network.name}' block has surpassed overall indexing checkpoint`,
+            msg: `Finalized '${perChainApp.indexingBuild.network.name}' block has surpassed overall indexing checkpoint`,
           });
         }
 
@@ -609,7 +617,7 @@ export const createSync = async (
           onRealtimeEvent({
             type: "finalize",
             checkpoint: to,
-            network: app.indexingBuild.network,
+            network: perChainApp.indexingBuild.network,
           });
         }
 
@@ -621,9 +629,9 @@ export const createSync = async (
 
         let reorgedEvents = 0;
 
-        const isReorgedEvent = ({ chainId, event: { block } }: Event) => {
+        const isReorgedEvent = ({ network, event: { block } }: Event) => {
           if (
-            chainId === network.chainId &&
+            network === perChainApp.indexingBuild.network &&
             Number(block.number) > hexToNumber(event.block.number)
           ) {
             reorgedEvents++;
@@ -639,14 +647,16 @@ export const createSync = async (
           (e) => isReorgedEvent(e) === false,
         );
 
-        app.common.logger.debug({
+        perChainApp.common.logger.debug({
           service: "sync",
-          msg: `Removed ${reorgedEvents} reorged '${app.indexingBuild.network.name}' events`,
+          msg: `Removed ${reorgedEvents} reorged '${perChainApp.indexingBuild.network.name}' events`,
         });
 
-        if (app.preBuild.ordering === "multichain") {
+        if (perChainApp.preBuild.ordering === "multichain") {
           // Note: `checkpoints.current` not used in multichain ordering
-          const checkpoint = getMultichainCheckpoint(app, { tag: "current" })!;
+          const checkpoint = getMultichainCheckpoint(perChainApp, {
+            tag: "current",
+          })!;
 
           // Move events from executed to pending
 
@@ -658,7 +668,7 @@ export const createSync = async (
           );
           pendingEvents = pendingEvents.concat(events);
 
-          app.common.logger.debug({
+          perChainApp.common.logger.debug({
             service: "sync",
             msg: `Rescheduled ${events.length} reorged events`,
           });
@@ -666,7 +676,7 @@ export const createSync = async (
           onRealtimeEvent({
             type: "reorg",
             checkpoint,
-            network: app.indexingBuild.network,
+            network: perChainApp.indexingBuild.network,
           });
         } else {
           const from = checkpoints.current;
@@ -679,7 +689,7 @@ export const createSync = async (
           executedEvents = executedEvents.filter((e) => e.checkpoint < to);
           pendingEvents = pendingEvents.concat(events);
 
-          app.common.logger.debug({
+          perChainApp.common.logger.debug({
             service: "sync",
             msg: `Rescheduled ${events.length} reorged events`,
           });
@@ -688,7 +698,7 @@ export const createSync = async (
             onRealtimeEvent({
               type: "reorg",
               checkpoint: to,
-              network: app.indexingBuild.network,
+              network: perChainApp.indexingBuild.network,
             });
           }
         }
@@ -828,27 +838,24 @@ export const createSync = async (
   return {
     getEvents,
     async startRealtime() {
-      for (const network of params.indexingBuild.networks) {
-        const { syncProgress, realtimeSync } = perNetworkSync.get(network)!;
-
-        const sources = params.indexingBuild.sources.filter(
-          ({ filter }) => filter.chainId === network.chainId,
-        );
-        const filters = sources.map(({ filter }) => filter);
-        status[network.name]!.block = {
+      for (const [
+        perChainApp,
+        { syncProgress, realtimeSync },
+      ] of perChainSync.entries()) {
+        status[perChainApp.indexingBuild.network.name]!.block = {
           number: hexToNumber(syncProgress.current!.number),
           timestamp: hexToNumber(syncProgress.current!.timestamp),
         };
-        status[network.name]!.ready = true;
+        status[perChainApp.indexingBuild.network.name]!.ready = true;
 
         if (isSyncEnd(syncProgress)) {
           app.common.metrics.ponder_sync_is_complete.set(
-            { network: network.name },
+            { network: perChainApp.indexingBuild.network.name },
             1,
           );
         } else {
           app.common.metrics.ponder_sync_is_realtime.set(
-            { network: network.name },
+            { network: perChainApp.indexingBuild.network.name },
             1,
           );
 
@@ -857,14 +864,13 @@ export const createSync = async (
             Map<Address, number>
           >();
 
-          for (const filter of filters) {
+          for (const filter of perChainApp.indexingBuild.filters) {
             switch (filter.type) {
               case "log":
                 if (isAddressFactory(filter.address)) {
-                  const childAddresses =
-                    await params.syncStore.getChildAddresses({
-                      factory: filter.address,
-                    });
+                  const childAddresses = await syncStore.getChildAddresses({
+                    factory: filter.address,
+                  });
 
                   initialChildAddresses.set(filter.address, childAddresses);
                 }
@@ -895,7 +901,7 @@ export const createSync = async (
 
           app.common.logger.debug({
             service: "sync",
-            msg: `Initialized '${network.name}' realtime sync with ${initialChildAddresses.size} factory child addresses`,
+            msg: `Initialized '${perChainApp.indexingBuild.network.name}' realtime sync with ${initialChildAddresses.size} factory child addresses`,
           });
 
           realtimeSync.start({ syncProgress, initialChildAddresses });

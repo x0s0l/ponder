@@ -764,7 +764,7 @@ export const createHistoricalSync = async (
       // Fragments are used to create a minimal filter, to avoid refetching data even if a filter
       // is only partially synced.
 
-      for (const { filter } of args.sources) {
+      for (const filter of app.indexingBuild.filters) {
         if (
           (filter.fromBlock !== undefined && filter.fromBlock > _interval[1]) ||
           (filter.toBlock !== undefined && filter.toBlock < _interval[0])
