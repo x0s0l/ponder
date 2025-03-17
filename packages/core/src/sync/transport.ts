@@ -1,5 +1,5 @@
-import type { SyncStore } from "@/sync-store/index.js";
-import type { RequestQueue } from "@/utils/requestQueue.js";
+import type { PerChainPonderApp } from "@/internal/types.js";
+import { createSyncStore } from "@/sync-store/index.js";
 import {
   type Hex,
   type Transport,
@@ -46,13 +46,10 @@ const MULTICALL_SELECTOR = toFunctionSelector(
   getAbiItem({ abi: multicall3Abi, name: "aggregate3" }),
 );
 
-export const cachedTransport = ({
-  requestQueue,
-  syncStore,
-}: {
-  requestQueue: RequestQueue;
-  syncStore: SyncStore;
-}): Transport => {
+export const cachedTransport = (
+  perChainApp: Pick<PerChainPonderApp, "common" | "database" | "indexingBuild">,
+): Transport => {
+  const syncStore = createSyncStore(perChainApp);
   return ({ chain }) => {
     const c = custom({
       async request({ method, params }) {
@@ -99,7 +96,7 @@ export const cachedTransport = ({
             (result) => result !== undefined,
           )
             ? []
-            : await requestQueue
+            : await perChainApp.indexingBuild.requestQueue
                 .request({
                   method: "eth_call",
                   params: [
@@ -215,7 +212,8 @@ export const cachedTransport = ({
               return cachedResult;
             }
           } else {
-            const response = await requestQueue.request(body);
+            const response =
+              await perChainApp.indexingBuild.requestQueue.request(body);
             // Note: "0x" is a valid response for some requests, but is sometimes erroneously returned by the RPC.
             // Because the frequency of these valid requests with no return data is very low, we don't cache it.
             if (response !== "0x") {
@@ -242,7 +240,7 @@ export const cachedTransport = ({
             return response;
           }
         } else {
-          return requestQueue.request(body);
+          return perChainApp.indexingBuild.requestQueue.request(body);
         }
       },
     });

@@ -49,7 +49,7 @@ export async function run(
     crashRecoveryCheckpoint,
   });
 
-  const indexing = createIndexing(app, { syncStore });
+  const indexing = createIndexing(app);
 
   const indexingCache = createIndexingCache(app, { crashRecoveryCheckpoint });
 

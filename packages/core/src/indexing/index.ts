@@ -8,7 +8,6 @@ import type {
   SetupEvent,
   TraceFilter,
 } from "@/internal/types.js";
-import type { SyncStore } from "@/sync-store/index.js";
 import { isAddressFactory } from "@/sync/filter.js";
 import { cachedTransport } from "@/sync/transport.js";
 import type { Db } from "@/types/db.js";
@@ -56,10 +55,7 @@ export type Indexing = {
   >;
 };
 
-export const createIndexing = (
-  app: PonderApp,
-  { syncStore }: { syncStore: SyncStore },
-): Indexing => {
+export const createIndexing = (app: PonderApp): Indexing => {
   let blockNumber: bigint = undefined!;
   const context: Context = {
     network: { name: undefined!, chainId: undefined! },
@@ -123,12 +119,12 @@ export const createIndexing = (
     }
   }
 
-  for (const { network, requestQueue } of app.indexingBuild) {
+  for (const indexingBuild of app.indexingBuild) {
     perChainClients.set(
-      network,
+      indexingBuild.network,
       createClient({
-        transport: cachedTransport({ requestQueue, syncStore }),
-        chain: network.chain,
+        transport: cachedTransport({ ...app, indexingBuild }),
+        chain: indexingBuild.network.chain,
         // @ts-ignore
       }).extend(getPonderActions(() => blockNumber!)),
     );

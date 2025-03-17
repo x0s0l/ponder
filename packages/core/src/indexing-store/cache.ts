@@ -37,9 +37,9 @@ export type IndexingCache = {
    * Returns the entry for `table` with `key`.
    */
   get: (params: {
+    db: Drizzle<Schema>;
     table: Table;
     key: object;
-    db: Drizzle<Schema>;
   }) =>
     | { [key: string]: unknown }
     | null
@@ -60,9 +60,9 @@ export type IndexingCache = {
    * Deletes the entry for `table` with `key`.
    */
   delete: (params: {
+    db: Drizzle<Schema>;
     table: Table;
     key: object;
-    db: Drizzle<Schema>;
   }) => boolean | Promise<boolean>;
   /**
    * Writes all temporary data to the database.

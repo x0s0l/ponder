@@ -16,7 +16,7 @@ import type {
   TransactionFilter,
   TransferFilter,
 } from "@/internal/types.js";
-import type { SyncStore } from "@/sync-store/index.js";
+import { createSyncStore } from "@/sync-store/index.js";
 import {
   getChildAddress,
   isAddressFactory,
@@ -65,14 +65,9 @@ export type HistoricalSync = {
 
 export const createHistoricalSync = async (
   app: PerChainPonderApp,
-  {
-    syncStore,
-    onFatalError,
-  }: {
-    syncStore: SyncStore;
-    onFatalError: (error: Error) => void;
-  },
+  { onFatalError }: { onFatalError: (error: Error) => void },
 ): Promise<HistoricalSync> => {
+  const syncStore = createSyncStore(app);
   /**
    * Flag to fetch transaction receipts through _eth_getBlockReceipts (true) or _eth_getTransactionReceipt (false)
    */

@@ -20,7 +20,7 @@ import {
   type RealtimeSyncEvent,
   createRealtimeSync,
 } from "@/sync-realtime/index.js";
-import type { SyncStore } from "@/sync-store/index.js";
+import { createSyncStore } from "@/sync-store/index.js";
 import {
   type Checkpoint,
   MAX_CHECKPOINT,
@@ -217,17 +217,16 @@ export const getChainCheckpoint = ({
 export const createSync = async (
   app: PonderApp,
   {
-    syncStore,
     onRealtimeEvent,
     onFatalError,
     crashRecoveryCheckpoint,
   }: {
-    syncStore: SyncStore;
     onRealtimeEvent(event: RealtimeEvent): Promise<void>;
     onFatalError(error: Error): void;
     crashRecoveryCheckpoint: string;
   },
 ): Promise<Sync> => {
+  const syncStore = createSyncStore(app);
   const perChainSync = new Map<
     PerChainPonderApp,
     {
@@ -383,7 +382,6 @@ export const createSync = async (
         });
 
         const localEventGenerator = getLocalEventGenerator(perChainApp, {
-          syncStore,
           localSyncGenerator,
           from: getMultichainCheckpoint(perChainApp, { tag: "start" })!,
           to: min(
@@ -731,7 +729,6 @@ export const createSync = async (
       }
 
       const historicalSync = await createHistoricalSync(perChainApp, {
-        syncStore,
         onFatalError,
       });
 
@@ -797,7 +794,7 @@ export const createSync = async (
 
       const perChainOnRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent(
         perChainApp,
-        { syncStore, syncProgress },
+        { syncProgress },
       );
     }),
   );
@@ -920,11 +917,9 @@ export const createSync = async (
 
 export const getPerChainOnRealtimeSyncEvent = (
   app: PerChainPonderApp,
-  {
-    syncStore,
-    syncProgress,
-  }: { syncStore: SyncStore; syncProgress: SyncProgress },
+  { syncProgress }: { syncProgress: SyncProgress },
 ) => {
+  const syncStore = createSyncStore(app);
   let unfinalizedBlocks: Omit<
     Extract<RealtimeSyncEvent, { type: "block" }>,
     "type"
@@ -1105,19 +1100,18 @@ export const getPerChainOnRealtimeSyncEvent = (
 export async function* getLocalEventGenerator(
   app: PerChainPonderApp,
   {
-    syncStore,
     localSyncGenerator,
     from,
     to,
     limit,
   }: {
-    syncStore: SyncStore;
     localSyncGenerator: AsyncGenerator<number>;
     from: string;
     to: string;
     limit: number;
   },
 ): AsyncGenerator<{ events: RawEvent[]; checkpoint: string }> {
+  const syncStore = createSyncStore(app);
   const fromBlock = Number(decodeCheckpoint(from).blockNumber);
   const toBlock = Number(decodeCheckpoint(to).blockNumber);
   let cursor = fromBlock;
