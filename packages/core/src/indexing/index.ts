@@ -157,21 +157,20 @@ export const createIndexing = (
   }: { event: SetupEvent }): Promise<
     { status: "error"; error: Error } | { status: "success" }
   > => {
-    const indexingFunction = indexingFunctions[event.name];
-    const metricLabel = { event: event.name };
+    const metricLabel = { event: event.eventCallback.name };
 
     try {
-      blockNumber = event.block;
-      context.network.chainId = event.chainId;
-      context.network.name = networkByChainId[event.chainId]!.name;
-      context.client = clientByChainId[event.chainId]!;
-      context.contracts = contractsByChainId[event.chainId]!;
+      blockNumber = BigInt(event.eventCallback.filter.fromBlock ?? 0);
+      context.network.chainId = event.network.chainId;
+      context.network.name = event.network.name;
+      // context.client = clientByChainId[event.chainId]!;
+      // context.contracts = contractsByChainId[event.chainId]!;
 
       const endClock = startClock();
 
-      await indexingFunction!({ context });
+      await event.eventCallback.callback({ context });
 
-      common.metrics.ponder_indexing_function_duration.observe(
+      app.common.metrics.ponder_indexing_function_duration.observe(
         metricLabel,
         endClock(),
       );
@@ -179,21 +178,21 @@ export const createIndexing = (
       const error =
         _error instanceof Error ? _error : new Error(String(_error));
 
-      if (common.shutdown.isKilled) {
+      if (app.common.shutdown.isKilled) {
         throw new ShutdownError();
       }
 
-      addStackTrace(error, common.options);
-      addErrorMeta(error, toErrorMeta(event));
+      addStackTrace(app, { error });
+      addErrorMeta({ error, meta: toErrorMeta(event) });
 
       const decodedCheckpoint = decodeCheckpoint(event.checkpoint);
-      common.logger.error({
+      app.common.logger.error({
         service: "indexing",
-        msg: `Error while processing '${event.name}' event in '${networkByChainId[event.chainId]!.name}' block ${decodedCheckpoint.blockNumber}`,
+        msg: `Error while processing '${event.eventCallback.name}' event in '${event.network.name}' block ${decodedCheckpoint.blockNumber}`,
         error,
       });
 
-      common.metrics.ponder_indexing_has_error.set(1);
+      app.common.metrics.ponder_indexing_has_error.set(1);
 
       return { status: "error", error: error };
     }
@@ -253,36 +252,22 @@ export const createIndexing = (
   return {
     async processSetupEvents({ db }) {
       context.db = db;
-      for (const eventName of Object.keys(indexingFunctions)) {
-        if (!eventName.endsWith(":setup")) continue;
+      for (const indexingBuild of app.indexingBuild) {
+        for (const eventCallback of indexingBuild.eventCallbacks) {
+          if (eventCallback.type !== "setup") continue;
 
-        const [contractName] = eventName.split(":");
-
-        for (const network of networks) {
-          const source = sources.find(
-            (s) =>
-              s.type === "contract" &&
-              s.name === contractName &&
-              s.filter.chainId === network.chainId,
-          ) as ContractSource | undefined;
-
-          if (source === undefined) continue;
-
-          eventCount[eventName]!++;
+          eventCount[eventCallback.name]!++;
 
           const result = await executeSetup({
             event: {
               type: "setup",
-              chainId: network.chainId,
               checkpoint: encodeCheckpoint({
                 ...ZERO_CHECKPOINT,
-                chainId: BigInt(network.chainId),
-                blockNumber: BigInt(source.filter.fromBlock ?? 0),
+                chainId: BigInt(indexingBuild.network.chainId),
+                blockNumber: BigInt(eventCallback.filter.fromBlock ?? 0),
               }),
-
-              name: eventName,
-
-              block: BigInt(source.filter.fromBlock ?? 0),
+              network: indexingBuild.network,
+              eventCallback,
             },
           });
 
@@ -332,7 +317,7 @@ export const toErrorMeta = (
   switch (event?.type) {
     case "setup": {
       return `Block:\n${prettyPrint({
-        number: event?.block,
+        number: event?.eventCallback?.filter?.fromBlock ?? 0,
       })}`;
     }
 

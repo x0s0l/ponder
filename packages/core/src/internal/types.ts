@@ -410,13 +410,9 @@ export type Event =
 
 export type SetupEvent = {
   type: "setup";
-  chainId: number;
   checkpoint: string;
-
-  /** `${source.name}:setup` */
-  name: string;
-
-  block: bigint;
+  network: Network;
+  eventCallback: IndexingBuild["eventCallbacks"][number];
 };
 
 export type LogEvent = {
