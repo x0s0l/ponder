@@ -1,6 +1,13 @@
 import type { IndexingStore } from "@/indexing-store/index.js";
 import { ShutdownError } from "@/internal/errors.js";
-import type { Event, PonderApp, Schema, SetupEvent } from "@/internal/types.js";
+import type {
+  Event,
+  Network,
+  PonderApp,
+  Schema,
+  SetupEvent,
+  TraceFilter,
+} from "@/internal/types.js";
 import type { SyncStore } from "@/sync-store/index.js";
 import { isAddressFactory } from "@/sync/filter.js";
 import { cachedTransport } from "@/sync/transport.js";
@@ -62,21 +69,18 @@ export const createIndexing = (
   };
 
   const eventCount: { [eventName: string]: number } = {};
-  // const networkByChainId: { [chainId: number]: Network } = {};
-  const clientByChainId: { [chainId: number]: ReadOnlyClient } = {};
-  const contractsByChainId: {
-    [chainId: number]: Record<
-      string,
-      {
+  const perChainClients = new Map<Network, ReadOnlyClient>();
+  const perChainContracts = new Map<
+    Network,
+    {
+      [contractName: string]: {
         abi: Abi;
         address?: Address | readonly Address[];
         startBlock?: number;
         endBlock?: number;
-      }
-    >;
-  } = {};
-
-  // build eventCount
+      };
+    }
+  >();
 
   const eventNames = app.indexingBuild.flatMap(({ eventCallbacks }) =>
     eventCallbacks.map(({ name }) => name),
@@ -86,58 +90,48 @@ export const createIndexing = (
     eventCount[eventName] = 0;
   }
 
-  // build networkByChainId
-  // for (const network of networks) {
-  //   networkByChainId[network.chainId] = network;
-  // }
+  for (const indexingBuild of app.indexingBuild) {
+    perChainContracts.set(indexingBuild.network, {});
 
-  // build contractsByChainId
-  for (const source of sources) {
-    if (source.type === "block" || source.type === "account") continue;
+    for (const eventCallback of indexingBuild.eventCallbacks) {
+      if (eventCallback.type !== "contract") continue;
 
-    let address: Address | undefined;
+      let address: Address | undefined;
 
-    if (source.filter.type === "log") {
-      const _address = source.filter.address;
-      if (
-        isAddressFactory(_address) === false &&
-        Array.isArray(_address) === false &&
-        _address !== undefined
-      ) {
-        address = _address as Address;
+      if (eventCallback.filter.type === "log") {
+        const _address = eventCallback.filter.address;
+        if (
+          isAddressFactory(_address) === false &&
+          Array.isArray(_address) === false &&
+          _address !== undefined
+        ) {
+          address = _address as Address;
+        }
+      } else {
+        const _address = (eventCallback.filter as TraceFilter).toAddress;
+        if (isAddressFactory(_address) === false && _address !== undefined) {
+          address = (_address as Address[])[0];
+        }
       }
-    } else {
-      const _address = source.filter.toAddress;
-      if (isAddressFactory(_address) === false && _address !== undefined) {
-        address = (_address as Address[])[0];
-      }
+
+      perChainContracts.get(indexingBuild.network)![eventCallback.name] = {
+        abi: eventCallback.metadata.abi,
+        address: address ? checksumAddress(address) : address,
+        startBlock: eventCallback.filter.fromBlock,
+        endBlock: eventCallback.filter.toBlock,
+      };
     }
-
-    if (contractsByChainId[source.filter.chainId] === undefined) {
-      contractsByChainId[source.filter.chainId] = {};
-    }
-
-    // Note: multiple sources with the same contract (logs and traces)
-    // should only create one entry in the `contracts` object
-    if (contractsByChainId[source.filter.chainId]![source.name] !== undefined)
-      continue;
-
-    contractsByChainId[source.filter.chainId]![source.name] = {
-      abi: source.abi,
-      address: address ? checksumAddress(address) : address,
-      startBlock: source.filter.fromBlock,
-      endBlock: source.filter.toBlock,
-    };
   }
 
-  // build clientByChainId
-  for (let i = 0; i < networks.length; i++) {
-    const network = networks[i]!;
-    clientByChainId[network.chainId] = createClient({
-      transport: cachedTransport({ requestQueue, syncStore }),
-      chain: network.chain,
-      // @ts-ignore
-    }).extend(getPonderActions(() => blockNumber!));
+  for (const { network, requestQueue } of app.indexingBuild) {
+    perChainClients.set(
+      network,
+      createClient({
+        transport: cachedTransport({ requestQueue, syncStore }),
+        chain: network.chain,
+        // @ts-ignore
+      }).extend(getPonderActions(() => blockNumber!)),
+    );
   }
 
   const updateCompletedEvents = () => {
@@ -163,8 +157,8 @@ export const createIndexing = (
       blockNumber = BigInt(event.eventCallback.filter.fromBlock ?? 0);
       context.network.chainId = event.network.chainId;
       context.network.name = event.network.name;
-      // context.client = clientByChainId[event.chainId]!;
-      // context.contracts = contractsByChainId[event.chainId]!;
+      context.client = perChainClients.get(event.network)!;
+      context.contracts = perChainContracts.get(event.network)!;
 
       const endClock = startClock();
 
@@ -211,8 +205,8 @@ export const createIndexing = (
       blockNumber = event.event.block.number;
       context.network.chainId = event.network.chainId;
       context.network.name = event.network.name;
-      // context.client = clientByChainId[event.eventCallback.network.chainId]!;
-      // context.contracts = contractsByChainId[event.eventCallback.network.chainId]!;
+      context.client = perChainClients.get(event.network)!;
+      context.contracts = perChainContracts.get(event.network)!;
 
       const endClock = startClock();
 

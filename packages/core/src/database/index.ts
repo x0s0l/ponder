@@ -4,7 +4,6 @@ import { getColumnCasing, getReorgTable } from "@/drizzle/kit/index.js";
 import type { Common } from "@/internal/common.js";
 import { NonRetryableError, ShutdownError } from "@/internal/errors.js";
 import type {
-  IndexingBuild,
   NamespaceBuild,
   PreBuild,
   Schema,
@@ -75,7 +74,7 @@ export type Database = {
   /** Migrate the `ponder_sync` schema. */
   migrateSync(): Promise<void>;
   /** Migrate the user schema. */
-  migrate({ buildId }: Pick<IndexingBuild, "buildId">): Promise<void>;
+  migrate({ buildId }: { buildId: string }): Promise<void>;
   /** Determine the app checkpoint, possibly reverting unfinalized rows. */
   recoverCheckpoint(): Promise<string>;
   createIndexes(): Promise<void>;

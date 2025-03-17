@@ -285,18 +285,18 @@ export function buildPayload({
   indexingBuild?: IndexingBuild[];
 }) {
   const table_count = schemaBuild ? Object.keys(schemaBuild.schema).length : 0;
-  const indexing_function_count = indexingBuild
-    ? Object.values(indexingBuild.indexingFunctions).reduce(
-        (acc, f) => acc + Object.keys(f).length,
-        0,
-      )
-    : 0;
+  // const indexing_function_count = indexingBuild
+  //   ? Object.values(indexingBuild.indexingFunctions).reduce(
+  //       (acc, f) => acc + Object.keys(f).length,
+  //       0,
+  //     )
+  //   : 0;
 
   return {
     database_kind: preBuild?.databaseConfig.kind,
-    contract_count: indexingBuild?.sources.length ?? 0,
-    network_count: indexingBuild?.networks.length ?? 0,
+    // contract_count: indexingBuild?.sources.length ?? 0,
+    network_count: indexingBuild?.length ?? 0,
     table_count,
-    indexing_function_count,
+    // indexing_function_count,
   };
 }

@@ -82,6 +82,8 @@ export const buildEvents = (
 
   for (const eventCallback of app.indexingBuild.eventCallbacks) {
     switch (eventCallback.type) {
+      case "setup":
+        break;
       case "contract": {
         switch (eventCallback.filter.type) {
           case "log": {
@@ -342,6 +344,7 @@ export const buildEvents = (
         }
         break;
       }
+
       default:
         never(eventCallback);
     }
@@ -360,6 +363,8 @@ export const decodeEvents = (
 
   for (const event of rawEvents) {
     switch (event.eventCallback.type) {
+      case "setup":
+        break;
       case "contract": {
         switch (event.eventCallback.filter.type) {
           case "log": {
@@ -510,9 +515,8 @@ export const decodeEvents = (
         });
         break;
       }
-
       default:
-        never(event);
+        never(event.eventCallback);
     }
   }
 
