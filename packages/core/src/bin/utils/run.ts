@@ -6,7 +6,6 @@ import { createIndexing } from "@/indexing/index.js";
 import { FlushError } from "@/internal/errors.js";
 import { getAppProgress } from "@/internal/metrics.js";
 import type { PonderApp } from "@/internal/types.js";
-import { createSyncStore } from "@/sync-store/index.js";
 import { type RealtimeEvent, createSync, splitEvents } from "@/sync/index.js";
 import {
   ZERO_CHECKPOINT_STRING,
@@ -33,12 +32,9 @@ export async function run(
 
   runCodegen(app);
 
-  const syncStore = createSyncStore(app);
-
   const realtimeMutex = createMutex();
 
   const sync = await createSync(app, {
-    syncStore,
     onRealtimeEvent: (realtimeEvent) => {
       if (realtimeEvent.type === "reorg") {
         realtimeMutex.clear();

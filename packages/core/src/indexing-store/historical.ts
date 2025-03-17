@@ -38,7 +38,6 @@ export const createHistoricalIndexingStore = (
       checkOnchainTable(table, "find");
       return indexingCache.get({ table, key, db });
     },
-
     // @ts-ignore
     insert(table: Table) {
       return {
@@ -148,9 +147,9 @@ export const createHistoricalIndexingStore = (
                 return rows;
               } else {
                 const row = await indexingCache.get({
+                  db,
                   table,
                   key: values,
-                  db,
                 });
 
                 if (row) {
@@ -251,7 +250,7 @@ export const createHistoricalIndexingStore = (
           });
           checkOnchainTable(table, "update");
 
-          const row = await indexingCache.get({ table, key, db });
+          const row = await indexingCache.get({ db, table, key });
 
           if (row === null) {
             const error = new RecordNotFoundError(
@@ -290,7 +289,7 @@ export const createHistoricalIndexingStore = (
         method: "delete",
       });
       checkOnchainTable(table, "delete");
-      return indexingCache.delete({ table, key, db });
+      return indexingCache.delete({ db, table, key });
     },
     // @ts-ignore
     sql: drizzle(
