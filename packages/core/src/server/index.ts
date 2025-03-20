@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { PonderApp } from "@/internal/types.js";
+import { createUserStore } from "@/user-store/index.js";
 import { startClock } from "@/utils/timer.js";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -8,13 +9,13 @@ import { createMiddleware } from "hono/factory";
 import { createHttpTerminator } from "http-terminator";
 import { onError } from "./error.js";
 
-export type Server = {
-  hono: Hono;
-};
+export type Server = { hono: Hono };
 
 export async function createServer(
-  app: Pick<PonderApp, "common" | "database" | "apiBuild">,
+  app: Omit<PonderApp, "indexingBuild">,
 ): Promise<Server> {
+  const userStore = await createUserStore(app);
+
   const metricsMiddleware = createMiddleware(async (c, next) => {
     const matchedPathLabels = c.req.matchedRoutes
       // Filter out global middlewares
@@ -74,7 +75,7 @@ export async function createServer(
       return c.text("", 200);
     })
     .get("/ready", async (c) => {
-      const status = await app.database.getStatus();
+      const status = await userStore.getStatus();
 
       if (
         status !== null &&
@@ -86,7 +87,7 @@ export async function createServer(
       return c.text("Historical indexing is not complete.", 503);
     })
     .get("/status", async (c) => {
-      const status = await app.database.getStatus();
+      const status = await userStore.getStatus();
 
       return c.json(status);
     })

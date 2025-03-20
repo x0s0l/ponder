@@ -7,6 +7,7 @@ import { FlushError } from "@/internal/errors.js";
 import { getAppProgress } from "@/internal/metrics.js";
 import type { PonderApp } from "@/internal/types.js";
 import { type RealtimeEvent, createSync, splitEvents } from "@/sync/index.js";
+import { createUserStore } from "@/user-store/index.js";
 import {
   ZERO_CHECKPOINT_STRING,
   decodeCheckpoint,
@@ -27,10 +28,11 @@ export async function run(
     onReloadableError: (error: Error) => void;
   },
 ) {
-  const crashRecoveryCheckpoint = await app.database.recoverCheckpoint();
   await app.database.migrateSync();
-
   runCodegen(app);
+
+  const userStore = await createUserStore(app);
+  const crashRecoveryCheckpoint = await userStore.recoverCheckpoint();
 
   const realtimeMutex = createMutex();
 
@@ -46,10 +48,9 @@ export async function run(
   });
 
   const indexing = createIndexing(app);
-
   const indexingCache = createIndexingCache(app, { crashRecoveryCheckpoint });
 
-  await app.database.setStatus(sync.getStatus());
+  await userStore.setStatus({ status: sync.getStatus() });
 
   for (const { network } of app.indexingBuild) {
     const label = { network: network.name };
@@ -116,6 +117,8 @@ export async function run(
       await app.database.retry(async () => {
         await app.database
           .transaction(async (client, tx) => {
+            const userStore = await createUserStore(app, { db: tx });
+
             const historicalIndexingStore = createHistoricalIndexingStore(app, {
               indexingCache,
               db: tx,
@@ -185,9 +188,8 @@ export async function run(
               throw error;
             }
 
-            await app.database.finalize({
+            await userStore.finalize({
               checkpoint: events[events.length - 1]!.checkpoint,
-              db: tx,
             });
           })
           .catch((error) => {
@@ -198,7 +200,7 @@ export async function run(
       indexingCache.commit();
     }
 
-    await app.database.setStatus(sync.getStatus());
+    await userStore.setStatus({ status: sync.getStatus() });
   }
 
   // Persist the indexing store to the db. The `finalized`
@@ -213,6 +215,8 @@ export async function run(
 
   await app.database.retry(async () => {
     await app.database.transaction(async (client, tx) => {
+      const userStore = await createUserStore(app, { db: tx });
+
       try {
         await indexingCache.flush({ client });
       } catch (error) {
@@ -223,9 +227,8 @@ export async function run(
         throw error;
       }
 
-      await app.database.finalize({
+      await userStore.finalize({
         checkpoint: sync.getFinalizedCheckpoint(),
-        db: tx,
       });
     });
   });
@@ -303,10 +306,7 @@ export async function run(
             if (result.status === "error") onReloadableError(result.error);
 
             // Set reorg table `checkpoint` column for newly inserted rows.
-            await app.database.complete({
-              checkpoint,
-              db: app.database.qb.drizzle,
-            });
+            await userStore.complete({ checkpoint });
 
             if (app.preBuild.ordering === "multichain") {
               const { network } = app.indexingBuild.find(
@@ -330,26 +330,23 @@ export async function run(
           }
         }
 
-        await app.database.setStatus(event.status);
+        await userStore.setStatus({ status: event.status });
 
         break;
       }
       case "reorg":
-        await app.database.removeTriggers();
+        await userStore.removeTriggers();
         await app.database.retry(async () => {
           await app.database.qb.drizzle.transaction(async (tx) => {
-            await app.database.revert({ checkpoint: event.checkpoint, tx });
+            await userStore.revert({ checkpoint: event.checkpoint });
           });
         });
-        await app.database.createTriggers();
+        await userStore.createTriggers();
 
         break;
 
       case "finalize":
-        await app.database.finalize({
-          checkpoint: event.checkpoint,
-          db: app.database.qb.drizzle,
-        });
+        await userStore.finalize({ checkpoint: event.checkpoint });
         break;
 
       default:
@@ -357,12 +354,12 @@ export async function run(
     }
   });
 
-  await app.database.createIndexes();
-  await app.database.createTriggers();
+  await userStore.createIndexes();
+  await userStore.createTriggers();
 
   await sync.startRealtime();
 
-  await app.database.setStatus(sync.getStatus());
+  await userStore.setStatus({ status: sync.getStatus() });
 
   app.common.logger.info({
     service: "server",

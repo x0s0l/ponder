@@ -4,8 +4,6 @@ import { createServer } from "@/server/index.js";
 /**
  * Starts the server for the specified build.
  */
-export const runServer = async (
-  app: Pick<PonderApp, "common" | "database" | "apiBuild">,
-) => {
+export const runServer = async (app: Omit<PonderApp, "indexingBuild">) => {
   await createServer(app);
 };

@@ -3,6 +3,7 @@ import type { OnchainTable } from "@/drizzle/onchain.js";
 import { normalizeColumn } from "@/indexing-store/utils.js";
 import type { Schema } from "@/internal/types.js";
 import type { Drizzle, ReadonlyDrizzle } from "@/types/db.js";
+import type { UserStore } from "@/user-store/index.js";
 import { never } from "@/utils/never.js";
 import { deserialize, serialize } from "@/utils/serialize.js";
 import DataLoader from "dataloader";
@@ -68,7 +69,7 @@ import { GraphQLJSON } from "./json.js";
 type Parent = Record<string, any>;
 type Context = {
   getDataLoader: ReturnType<typeof buildDataLoaderCache>;
-  getStatus: Database["getStatus"];
+  getStatus: UserStore["getStatus"];
   drizzle: Drizzle<{ [key: string]: OnchainTable }>;
 };
 
