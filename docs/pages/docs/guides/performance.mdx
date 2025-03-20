@@ -1,0 +1,102 @@
+---
+title: "Performance"
+description: "Building performance backends with Ponder."
+---
+
+import { Callout, FileTree, Steps } from "nextra/components";
+
+# Performance
+
+Ponder is a powerful tool for building backends for crypto apps. It can scale to process hundreds of millions of events and backfill thousands of events per second.
+
+In this guide we will explore the best practices for getting maximum performance for a Ponder app. 
+
+[events per second and realtime latency charts]
+
+## Ponder Architecture
+
+To start, a review of the architecture of Ponder. Ponder is an [ETL framework](wikipedia). It **extracts** data from an Ethereum node through the JSON-RPC API, **transforms** the data with user-defined indexing functions, and **loads** the results into postgres for persistent storage.
+
+## Indexing
+
+Within Ponder, the transform and load step are combined and referred to as "indexing". Ponder aggressively takes advantage of batching and an in-memory [query builder](/docs/indexing/write-to-the-database#store-api) to improve performance.
+
+User code can have the most impact on performance in the indexing step. There are several recommendations:
+
+### Limit raw SQL
+
+Sometimes the query builder API is not powerful enough. When this is the case, you can drop down to [raw SQL](/docs/indexing/write-to-the-database#raw-sql). However, this is significantly slower and should be used sparingly.
+
+- unique constraints
+
+```ts filename="src/index.ts"
+```
+
+- update where
+
+```ts filename="src/index.ts"
+```
+
+### Use simple primary keys
+
+Ponder can benefit from predictable, simple primary keys that only use properties of `event`. 
+
+
+```ts filename="src/index.ts"
+```
+
+Sometimes composite values are necessary to acheive the desired behavior. 
+
+```ts filename="src/index.ts"
+```
+
+### Move logic to "query" time
+
+Ponder provides an expressive SQL client for querying an app over HTTP. This can be leveraged to remove expensive computation from indexing functions.
+
+```ts filename="src/index.ts"
+```
+
+### Limit rpc requests
+
+
+## Sync
+
+The step of extracting events (logs, blocks, transactions, etc) by fetching them from the rpc or loading from a cache is referred as the "sync" within Ponder.
+
+Because fetching data from an Ethereum node can be expensive in terms of time and RPC credits, Ponder caches the results of rpc requests.
+
+Users can improve the performance of the initial sync by using a quality RPC provider with a high `maxRequestsPerSecond` for higher bandwidth.
+
+<Callout type="warning">
+  Be careful! Setting `maxRequestsPerSecond` too high can lead to 429 rate-limit responses.
+</Callout>
+
+```ts filename="ponder.config.ts" {9}
+import { createConfig } from "ponder";
+import { http } from "viem";
+
+export default createConfig({
+  networks: {    
+    mainnet: {
+      chainId: 1,      
+      transport: http("https://rpc.com/..."),
+      maxRequestsPerSecond: 250, 
+    },  
+  },  
+  // ... more config
+});
+```
+
+### Realtime
+
+- use `ordering: "multichain"` to ignore ordering between chains, greatly improving latency
+
+```ts filename="ponder.config.ts" {4}
+import { createConfig } from "ponder";
+
+export default createConfig({
+  ordering: "multichain",
+  // ... more config
+});
+```
