@@ -58,7 +58,7 @@ export type Database = {
   /** Migrate the `ponder_sync` schema. */
   migrateSync(): Promise<void>;
   /** Migrate the user schema. */
-  migrate({ buildId }: { buildId: string }): Promise<void>;
+  migrate({ buildId }: { buildId: string }): Promise<boolean>;
 };
 
 export type PonderApp = {
@@ -1080,6 +1080,8 @@ EXECUTE PROCEDURE "${namespace}".${notification};`),
           });
         }
       }, common.options.databaseHeartbeatInterval);
+
+      return createdTables;
     },
   } satisfies Database;
 

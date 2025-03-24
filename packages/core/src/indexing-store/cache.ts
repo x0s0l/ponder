@@ -229,7 +229,7 @@ export const recoverBatchError = async <T>(
 };
 
 export const createIndexingCache = (
-  app: PonderApp,
+  app: Omit<PonderApp, "indexingBuild" | "apiBuild">,
   { crashRecoveryCheckpoint }: { crashRecoveryCheckpoint: string },
 ): IndexingCache => {
   const cache: Cache = new Map();

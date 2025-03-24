@@ -1,8 +1,8 @@
 import {
   setupCleanup,
   setupCommon,
+  setupDatabaseConfig,
   setupDatabaseServices,
-  setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import { bigint, hex, onchainTable } from "@/drizzle/onchain.js";
 import type { QueryWithTypings } from "drizzle-orm";
@@ -13,7 +13,7 @@ import { beforeEach, expect, test } from "vitest";
 import { client } from "./index.js";
 
 beforeEach(setupCommon);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 const queryToParams = (query: QueryWithTypings) =>

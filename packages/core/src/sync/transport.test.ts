@@ -4,8 +4,8 @@ import {
   setupAnvil,
   setupCleanup,
   setupCommon,
+  setupDatabaseConfig,
   setupDatabaseServices,
-  setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import { deployErc20, deployMulticall, mintErc20 } from "@/_test/simulate.js";
 import { anvil, getNetwork, publicClient } from "@/_test/utils.js";
@@ -24,7 +24,7 @@ import { cachedTransport } from "./transport.js";
 
 beforeEach(setupCommon);
 beforeEach(setupAnvil);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("default", async (context) => {

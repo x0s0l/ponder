@@ -1,8 +1,8 @@
 import {
   setupCleanup,
   setupCommon,
+  setupDatabaseConfig,
   setupDatabaseServices,
-  setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import type { Database } from "@/database/index.js";
 import { onchainEnum, onchainTable, primaryKey } from "@/drizzle/onchain.js";
@@ -14,7 +14,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { buildDataLoaderCache, buildGraphQLSchema } from "./index.js";
 
 beforeEach(setupCommon);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 function buildContextValue(database: Database) {

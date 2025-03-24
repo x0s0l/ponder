@@ -4,8 +4,8 @@ import {
   setupAnvil,
   setupCleanup,
   setupCommon,
+  setupDatabaseConfig,
   setupDatabaseServices,
-  setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import {
   createPair,
@@ -39,7 +39,7 @@ import { type RealtimeSyncEvent, createRealtimeSync } from "./index.js";
 
 beforeEach(setupCommon);
 beforeEach(setupAnvil);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("createRealtimeSyncService()", async (context) => {

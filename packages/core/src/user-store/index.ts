@@ -28,18 +28,16 @@ export type UserStore = {
   removeTriggers(): Promise<void>;
   getStatus: () => Promise<Status | null>;
   setStatus: (params: { status: Status }) => Promise<void>;
-  // TODO(kyle) move revert outside of user store
-  revert(params: { checkpoint: string }): Promise<void>;
   finalize(params: { checkpoint: string }): Promise<void>;
   complete(params: { checkpoint: string }): Promise<void>;
 };
 
-export const createUserStore = async (
-  app: Omit<PonderApp, "indexingBuild" | "apiBuild">,
+export const createUserStore = (
+  app: Omit<PonderApp, "buildId" | "indexingBuild" | "apiBuild">,
   { db = app.database.qb.drizzle }: { db?: Drizzle<Schema> } = {
     db: app.database.qb.drizzle,
   },
-): Promise<UserStore> => {
+): UserStore => {
   const PONDER_META = getPonderMeta(app.namespace);
   const PONDER_STATUS = getPonderStatus(app.namespace);
 
@@ -47,7 +45,7 @@ export const createUserStore = async (
     (table): table is PgTableWithColumns<TableConfig> => is(table, PgTable),
   );
 
-  const userStore = {
+  return {
     async recoverCheckpoint() {
       // new tables are empty
       if (createdTables) return ZERO_CHECKPOINT_STRING;
@@ -107,8 +105,7 @@ export const createUserStore = async (
               }
 
               // Revert unfinalized data
-              // TODO(kyle) use tx
-              await this.revert({ checkpoint: meta.checkpoint });
+              await revert(app, { tx, checkpoint: meta.checkpoint });
             }
 
             return meta.checkpoint;
@@ -224,65 +221,6 @@ FOR EACH ROW EXECUTE FUNCTION "${app.namespace}".${getTableNames(table).triggerF
           });
       });
     },
-    async revert({ checkpoint }) {
-      await app.database.record(
-        { method: "revert", includeTraceLogs: true },
-        () =>
-          Promise.all(
-            tables.map(async (table) => {
-              const primaryKeyColumns = getPrimaryKeyColumns(table);
-
-              const result = await db.execute(
-                sql.raw(`
-WITH reverted1 AS (
-  DELETE FROM "${app.namespace}"."${getTableName(getReorgTable(table))}"
-  WHERE checkpoint > '${checkpoint}' RETURNING *
-), reverted2 AS (
-  SELECT ${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")}, MIN(operation_id) AS operation_id FROM reverted1
-  GROUP BY ${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")}
-), reverted3 AS (
-  SELECT ${Object.values(getTableColumns(table))
-    .map((column) => `reverted1."${getColumnCasing(column, "snake_case")}"`)
-    .join(", ")}, reverted1.operation FROM reverted2
-  INNER JOIN reverted1
-  ON ${primaryKeyColumns.map(({ sql }) => `reverted2."${sql}" = reverted1."${sql}"`).join("AND ")}
-  AND reverted2.operation_id = reverted1.operation_id
-), inserted AS (
-  DELETE FROM "${app.namespace}"."${getTableName(table)}" as t
-  WHERE EXISTS (
-    SELECT * FROM reverted3
-    WHERE ${primaryKeyColumns.map(({ sql }) => `t."${sql}" = reverted3."${sql}"`).join("AND ")}
-    AND OPERATION = 0
-  )
-  RETURNING *
-), updated_or_deleted AS (
-  INSERT INTO  "${app.namespace}"."${getTableName(table)}"
-  SELECT ${Object.values(getTableColumns(table))
-    .map((column) => `"${getColumnCasing(column, "snake_case")}"`)
-    .join(", ")} FROM reverted3
-  WHERE operation = 1 OR operation = 2
-  ON CONFLICT (${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")})
-  DO UPDATE SET
-    ${Object.values(getTableColumns(table))
-      .map(
-        (column) =>
-          `"${getColumnCasing(column, "snake_case")}" = EXCLUDED."${getColumnCasing(column, "snake_case")}"`,
-      )
-      .join(", ")}
-  RETURNING *
-) SELECT COUNT(*) FROM reverted1 as count;
-`),
-              );
-
-              app.common.logger.info({
-                service: "database",
-                // @ts-ignore
-                msg: `Reverted ${result.rows[0]!.count} unfinalized operations from '${getTableName(table)}'`,
-              });
-            }),
-          ),
-      );
-    },
     async finalize({ checkpoint }) {
       await app.database.record(
         { method: "finalize", includeTraceLogs: true },
@@ -324,7 +262,73 @@ WITH reverted1 AS (
         ),
       );
     },
-  } satisfies UserStore;
+  };
+};
 
-  return userStore;
+export const revert = async (
+  app: Omit<PonderApp, "buildId" | "indexingBuild" | "apiBuild">,
+  { tx, checkpoint }: { tx: Drizzle<Schema>; checkpoint: string },
+) => {
+  const tables = Object.values(app.schemaBuild.schema).filter(
+    (table): table is PgTableWithColumns<TableConfig> => is(table, PgTable),
+  );
+
+  await app.database.record({ method: "revert", includeTraceLogs: true }, () =>
+    Promise.all(
+      tables.map(async (table) => {
+        const primaryKeyColumns = getPrimaryKeyColumns(table);
+
+        const result = await tx.execute(
+          sql.raw(`
+WITH reverted1 AS (
+DELETE FROM "${app.namespace}"."${getTableName(getReorgTable(table))}"
+WHERE checkpoint > '${checkpoint}' RETURNING *
+), reverted2 AS (
+SELECT ${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")}, MIN(operation_id) AS operation_id FROM reverted1
+GROUP BY ${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")}
+), reverted3 AS (
+SELECT ${Object.values(getTableColumns(table))
+            .map(
+              (column) =>
+                `reverted1."${getColumnCasing(column, "snake_case")}"`,
+            )
+            .join(", ")}, reverted1.operation FROM reverted2
+INNER JOIN reverted1
+ON ${primaryKeyColumns.map(({ sql }) => `reverted2."${sql}" = reverted1."${sql}"`).join("AND ")}
+AND reverted2.operation_id = reverted1.operation_id
+), inserted AS (
+DELETE FROM "${app.namespace}"."${getTableName(table)}" as t
+WHERE EXISTS (
+SELECT * FROM reverted3
+WHERE ${primaryKeyColumns.map(({ sql }) => `t."${sql}" = reverted3."${sql}"`).join("AND ")}
+AND OPERATION = 0
+)
+RETURNING *
+), updated_or_deleted AS (
+INSERT INTO  "${app.namespace}"."${getTableName(table)}"
+SELECT ${Object.values(getTableColumns(table))
+            .map((column) => `"${getColumnCasing(column, "snake_case")}"`)
+            .join(", ")} FROM reverted3
+WHERE operation = 1 OR operation = 2
+ON CONFLICT (${primaryKeyColumns.map(({ sql }) => `"${sql}"`).join(", ")})
+DO UPDATE SET
+${Object.values(getTableColumns(table))
+  .map(
+    (column) =>
+      `"${getColumnCasing(column, "snake_case")}" = EXCLUDED."${getColumnCasing(column, "snake_case")}"`,
+  )
+  .join(", ")}
+RETURNING *
+) SELECT COUNT(*) FROM reverted1 as count;
+`),
+        );
+
+        app.common.logger.info({
+          service: "database",
+          // @ts-ignore
+          msg: `Reverted ${result.rows[0]!.count} unfinalized operations from '${getTableName(table)}'`,
+        });
+      }),
+    ),
+  );
 };

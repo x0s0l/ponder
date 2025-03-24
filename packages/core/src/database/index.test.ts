@@ -1,4 +1,4 @@
-import { setupCommon, setupIsolatedDatabase } from "@/_test/setup.js";
+import { setupCommon, setupDatabaseConfig } from "@/_test/setup.js";
 import { buildSchema } from "@/build/schema.js";
 import { getReorgTable } from "@/drizzle/kit/index.js";
 import { onchainEnum, onchainTable, primaryKey } from "@/drizzle/onchain.js";
@@ -18,7 +18,7 @@ import { beforeEach, expect, test } from "vitest";
 import { type Database, createDatabase, getPonderMeta } from "./index.js";
 
 beforeEach(setupCommon);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 
 const account = onchainTable("account", (p) => ({
   address: p.hex().primaryKey(),

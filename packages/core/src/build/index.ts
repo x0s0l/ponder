@@ -33,8 +33,13 @@ import { safeBuildSchema } from "./schema.js";
 import { parseViteNodeError } from "./stacktrace.js";
 
 declare global {
+  var PONDER_COMMON: Common;
+  var PONDER_BUILD_ID: string;
+  var PONDER_PRE_BUILD: PreBuild;
   var PONDER_NAMESPACE_BUILD: NamespaceBuild;
+  var PONDER_SCHEMA_BUILD: SchemaBuild;
   var PONDER_INDEXING_BUILD: IndexingBuild[];
+  var PONDER_API_BUILD: ApiBuild;
   var PONDER_DATABASE: Database;
 }
 
@@ -50,14 +55,9 @@ type ApiResult = Result<{ app: Hono }>;
 
 export type Build = {
   executeConfig: () => Promise<ConfigResult>;
-  executeSchema: (params: {
-    namespace: NamespaceBuild;
-  }) => Promise<SchemaResult>;
+  executeSchema: () => Promise<SchemaResult>;
   executeIndexingFunctions: () => Promise<IndexingResult>;
-  executeApi: (params: {
-    indexingBuild: IndexingBuild[];
-    database: Database;
-  }) => Promise<ApiResult>;
+  executeApi: () => Promise<ApiResult>;
   namespaceCompile: (params: {
     cliOptions: CliOptions;
   }) => Result<NamespaceBuild>;
@@ -81,6 +81,7 @@ export type Build = {
 export const createBuild = async ({
   common,
 }: { common: Common }): Promise<Build> => {
+  globalThis.PONDER_COMMON = common;
   const escapeRegex = /[.*+?^${}()|[\]\\]/g;
 
   const escapedIndexingDir = common.options.indexingDir
@@ -191,8 +192,7 @@ export const createBuild = async ({
         result: { config, contentHash },
       } as const;
     },
-    async executeSchema({ namespace }): Promise<SchemaResult> {
-      globalThis.PONDER_NAMESPACE_BUILD = namespace;
+    async executeSchema(): Promise<SchemaResult> {
       const executeResult = await executeFile({
         file: common.options.schemaFile,
       });
@@ -274,10 +274,7 @@ export const createBuild = async ({
         },
       };
     },
-    async executeApi({ indexingBuild, database }): Promise<ApiResult> {
-      globalThis.PONDER_INDEXING_BUILD = indexingBuild;
-      globalThis.PONDER_DATABASE = database;
-
+    async executeApi(): Promise<ApiResult> {
       if (!fs.existsSync(common.options.apiFile)) {
         const error = new BuildError(
           `API function file not found. Create a file at ${common.options.apiFile}. Read more: https://ponder.sh/docs/query/api-functions`,
@@ -349,6 +346,8 @@ export const createBuild = async ({
         });
         return { status: "error", error } as const;
       }
+      globalThis.PONDER_NAMESPACE_BUILD =
+        cliOptions.schema ?? process.env.DATABASE_SCHEMA!;
       return {
         status: "success",
         result: cliOptions.schema ?? process.env.DATABASE_SCHEMA!,
@@ -373,6 +372,11 @@ export const createBuild = async ({
         common.logger[log.level]({ service: "build", msg: log.msg });
       }
 
+      globalThis.PONDER_PRE_BUILD = {
+        databaseConfig: preBuild.databaseConfig,
+        ordering: preBuild.ordering,
+      };
+
       return {
         status: "success",
         result: {
@@ -395,6 +399,11 @@ export const createBuild = async ({
 
         return buildSchemaResult;
       }
+
+      globalThis.PONDER_SCHEMA_BUILD = {
+        schema,
+        statements: buildSchemaResult.statements,
+      };
 
       return {
         status: "success",
@@ -426,13 +435,16 @@ export const createBuild = async ({
         common.logger[log.level]({ service: "build", msg: log.msg });
       }
 
+      globalThis.PONDER_INDEXING_BUILD =
+        buildConfigAndIndexingFunctionsResult.indexingBuild;
+
       return {
         status: "success",
         result: buildConfigAndIndexingFunctionsResult.indexingBuild,
       } as const;
     },
     compileBuildId({ configResult, schemaResult, indexingResult }) {
-      return crypto
+      const buildId = crypto
         .createHash("sha256")
         .update(BUILD_ID_VERSION)
         .update(configResult.contentHash)
@@ -440,6 +452,10 @@ export const createBuild = async ({
         .update(indexingResult.contentHash)
         .digest("hex")
         .slice(0, 10);
+
+      globalThis.PONDER_BUILD_ID = buildId;
+
+      return buildId;
     },
     async compileApi({ apiResult }) {
       for (const route of apiResult.app.routes) {
@@ -466,6 +482,12 @@ export const createBuild = async ({
       }
 
       const port = await getNextAvailablePort({ common });
+
+      globalThis.PONDER_API_BUILD = {
+        hostname: common.options.hostname,
+        port,
+        app: apiResult.app,
+      };
 
       return {
         status: "success",

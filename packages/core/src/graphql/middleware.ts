@@ -1,6 +1,7 @@
 import { graphiQLHtml } from "@/graphql/graphiql.html.js";
 import type { Schema } from "@/internal/types.js";
 import type { ReadonlyDrizzle } from "@/types/db.js";
+import { createUserStore } from "@/user-store/index.js";
 import { maxAliasesPlugin } from "@escape.tech/graphql-armor-max-aliases";
 import { maxDepthPlugin } from "@escape.tech/graphql-armor-max-depth";
 import { maxTokensPlugin } from "@escape.tech/graphql-armor-max-tokens";
@@ -55,9 +56,17 @@ export const graphql = (
     context: () => {
       const getDataLoader = buildDataLoaderCache({ drizzle: db });
 
+      const userStore = createUserStore({
+        common: globalThis.PONDER_COMMON,
+        namespace: globalThis.PONDER_NAMESPACE_BUILD,
+        preBuild: globalThis.PONDER_PRE_BUILD,
+        schemaBuild: globalThis.PONDER_SCHEMA_BUILD,
+        database: globalThis.PONDER_DATABASE,
+      });
+
       return {
         getDataLoader,
-        getStatus: () => globalThis.PONDER_DATABASE.getStatus(),
+        getStatus: () => userStore.getStatus(),
         drizzle: db,
       };
     },

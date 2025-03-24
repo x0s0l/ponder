@@ -7,7 +7,7 @@ import { FlushError } from "@/internal/errors.js";
 import { getAppProgress } from "@/internal/metrics.js";
 import type { PonderApp } from "@/internal/types.js";
 import { type RealtimeEvent, createSync, splitEvents } from "@/sync/index.js";
-import { createUserStore } from "@/user-store/index.js";
+import { createUserStore, revert } from "@/user-store/index.js";
 import {
   ZERO_CHECKPOINT_STRING,
   decodeCheckpoint,
@@ -31,7 +31,7 @@ export async function run(
   await app.database.migrateSync();
   runCodegen(app);
 
-  const userStore = await createUserStore(app);
+  const userStore = createUserStore(app);
   const crashRecoveryCheckpoint = await userStore.recoverCheckpoint();
 
   const realtimeMutex = createMutex();
@@ -117,7 +117,7 @@ export async function run(
       await app.database.retry(async () => {
         await app.database
           .transaction(async (client, tx) => {
-            const userStore = await createUserStore(app, { db: tx });
+            const userStore = createUserStore(app, { db: tx });
 
             const historicalIndexingStore = createHistoricalIndexingStore(app, {
               indexingCache,
@@ -215,7 +215,7 @@ export async function run(
 
   await app.database.retry(async () => {
     await app.database.transaction(async (client, tx) => {
-      const userStore = await createUserStore(app, { db: tx });
+      const userStore = createUserStore(app, { db: tx });
 
       try {
         await indexingCache.flush({ client });
@@ -338,7 +338,7 @@ export async function run(
         await userStore.removeTriggers();
         await app.database.retry(async () => {
           await app.database.qb.drizzle.transaction(async (tx) => {
-            await userStore.revert({ checkpoint: event.checkpoint });
+            await revert(app, { tx, checkpoint: event.checkpoint });
           });
         });
         await userStore.createTriggers();

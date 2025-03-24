@@ -1,6 +1,6 @@
 import { ALICE, BOB } from "@/_test/constants.js";
 import { erc20ABI } from "@/_test/generated.js";
-import { setupAnvil, setupCommon } from "@/_test/setup.js";
+import { setupAnvil, setupCommon, setupPonder } from "@/_test/setup.js";
 import {
   createPair,
   deployErc20,
@@ -16,7 +16,6 @@ import {
   getNetwork,
   getPairWithFactoryConfigAndIndexingFunctions,
 } from "@/_test/utils.js";
-import { buildConfigAndIndexingFunctions } from "@/build/configAndIndexingFunctions.js";
 import type {
   BlockFilter,
   LogFactory,
@@ -95,17 +94,13 @@ test("isLogFactoryMatched()", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
+  const { config, indexingFunctions } =
     getPairWithFactoryConfigAndIndexingFunctions({
       address,
     });
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
-
-  const filter = sources[0]!.filter as LogFilter<LogFactory>;
+  const app = await setupPonder(context, { config, indexingFunctions });
+  const filter = app.indexingBuild[0]!.filters[0] as LogFilter<LogFactory>;
 
   const rpcLogs = await _eth_getLogs(requestQueue, {
     fromBlock: 2,
@@ -150,16 +145,13 @@ test("isLogFilterMatched()", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } = getErc20ConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getErc20ConfigAndIndexingFunctions({
     address,
   });
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = sources[0]!.filter as LogFilter<undefined>;
+  const filter = app.indexingBuild[0]!.filters[0] as LogFilter<undefined>;
 
   const rpcLogs = await _eth_getLogs(requestQueue, {
     fromBlock: 2,
@@ -187,16 +179,13 @@ test("isBlockFilterMatched", async (context) => {
     common: context.common,
   });
 
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = sources[0]!.filter as BlockFilter;
+  const filter = app.indexingBuild[0]!.filters[0] as BlockFilter;
 
   const rpcBlock = await _eth_getBlockByNumber(requestQueue, {
     blockNumber: 0,
@@ -231,18 +220,17 @@ test("isTransactionFilterMatched()", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
-    getAccountsConfigAndIndexingFunctions({
-      address: ALICE,
-    });
-
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
+  const { config, indexingFunctions } = getAccountsConfigAndIndexingFunctions({
+    address: ALICE,
   });
 
+  const app = await setupPonder(context, { config, indexingFunctions });
+
   // transaction:from
-  const filter = sources[1]!.filter as TransactionFilter<undefined, undefined>;
+  const filter = app.indexingBuild[0]!.filters[1] as TransactionFilter<
+    undefined,
+    undefined
+  >;
 
   const rpcBlock = await _eth_getBlockByNumber(requestQueue, {
     blockNumber: 1,
@@ -276,18 +264,17 @@ test("isTransferFilterMatched()", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
-    getAccountsConfigAndIndexingFunctions({
-      address: ALICE,
-    });
-
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
+  const { config, indexingFunctions } = getAccountsConfigAndIndexingFunctions({
+    address: ALICE,
   });
 
+  const app = await setupPonder(context, { config, indexingFunctions });
+
   // transfer:from
-  const filter = sources[3]!.filter as TransferFilter<undefined, undefined>;
+  const filter = app.indexingBuild[0]!.filters[3] as TransferFilter<
+    undefined,
+    undefined
+  >;
 
   const rpcBlock = await _eth_getBlockByNumber(requestQueue, {
     blockNumber: 1,
@@ -347,17 +334,17 @@ test("isTraceFilterMatched()", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } = getErc20ConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getErc20ConfigAndIndexingFunctions({
     address,
     includeCallTraces: true,
   });
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = sources[1]!.filter as TraceFilter<undefined, undefined>;
+  const filter = app.indexingBuild[0]!.filters[1] as TraceFilter<
+    undefined,
+    undefined
+  >;
 
   const rpcTrace = {
     trace: {

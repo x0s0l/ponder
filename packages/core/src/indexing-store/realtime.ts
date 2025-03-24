@@ -12,7 +12,9 @@ import {
 } from "./index.js";
 import { getCacheKey, getWhereCondition } from "./utils.js";
 
-export const createRealtimeIndexingStore = (app: PonderApp): IndexingStore => {
+export const createRealtimeIndexingStore = (
+  app: Omit<PonderApp, "indexingBuild" | "apiBuild">,
+): IndexingStore => {
   const find = (table: Table, key: object) => {
     return app.database.qb.drizzle
       .select()

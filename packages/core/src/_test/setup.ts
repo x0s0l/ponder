@@ -1,6 +1,7 @@
+import { createBuild } from "@/build/index.js";
 import { buildSchema } from "@/build/schema.js";
-import { type Database, createDatabase } from "@/database/index.js";
-import type { IndexingStore } from "@/indexing-store/index.js";
+import type { Config } from "@/config/index.js";
+import { createDatabase } from "@/database/index.js";
 import { createRealtimeIndexingStore } from "@/indexing-store/realtime.js";
 import type { Common } from "@/internal/common.js";
 import { createLogger } from "@/internal/logger.js";
@@ -10,13 +11,15 @@ import { createShutdown } from "@/internal/shutdown.js";
 import { createTelemetry } from "@/internal/telemetry.js";
 import type {
   DatabaseConfig,
-  IndexingBuild,
-  NamespaceBuild,
-  SchemaBuild,
+  IndexingFunctions,
+  PerChainPonderApp,
+  PonderApp,
+  Schema,
 } from "@/internal/types.js";
-import { type SyncStore, createSyncStore } from "@/sync-store/index.js";
+import { createSyncStore } from "@/sync-store/index.js";
 import { createPglite } from "@/utils/pglite.js";
 import type { PGlite } from "@electric-sql/pglite";
+import type { Hono } from "hono";
 import pg from "pg";
 import { type TestContext, afterAll } from "vitest";
 import { poolId, testClient } from "./utils.js";
@@ -66,7 +69,7 @@ afterAll(async () => {
  * beforeEach(setupIsolatedDatabase)
  * ```
  */
-export async function setupIsolatedDatabase(context: TestContext) {
+export async function setupDatabaseConfig(context: TestContext) {
   const connectionString = process.env.DATABASE_URL;
 
   if (connectionString) {
@@ -170,30 +173,32 @@ export async function setupIsolatedDatabase(context: TestContext) {
   }
 }
 
-export async function setupDatabaseServices(
+export async function setupPonder(
   context: TestContext,
   overrides: Partial<{
-    namespaceBuild: NamespaceBuild;
-    schemaBuild: Partial<SchemaBuild>;
-    indexingBuild: Partial<IndexingBuild>;
+    namespace: string;
+    schema: Schema;
+    config: Config;
+    indexingFunctions: IndexingFunctions;
+    app: Hono;
   }> = {},
-): Promise<{
-  database: Database;
-  syncStore: SyncStore;
-  indexingStore: IndexingStore;
-}> {
+): Promise<PerChainPonderApp> {
   const { statements } = buildSchema({
-    schema: overrides.schemaBuild?.schema ?? {},
+    schema: overrides.schema ?? {},
   });
+
+  const build = await createBuild({ common: context.common });
+
+  // const preBuildResult =  build.preCompile({ config: overrides.config ??  });
 
   const database = await createDatabase({
     common: context.common,
-    namespace: overrides.namespaceBuild ?? "public",
+    namespace: overrides.namespace ?? "public",
     preBuild: {
       databaseConfig: context.databaseConfig,
     },
     schemaBuild: {
-      schema: overrides.schemaBuild?.schema ?? {},
+      schema: overrides.schema ?? {},
       statements,
     },
   });
@@ -211,7 +216,7 @@ export async function setupDatabaseServices(
 
   const indexingStore = createRealtimeIndexingStore({
     common: context.common,
-    schemaBuild: { schema: overrides.schemaBuild?.schema ?? {} },
+    schemaBuild: { schema: overrides?.schema ?? {} },
     database,
   });
 

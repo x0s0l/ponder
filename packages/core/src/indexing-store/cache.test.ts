@@ -1,8 +1,8 @@
 import {
   setupCleanup,
   setupCommon,
-  setupDatabaseServices,
-  setupIsolatedDatabase,
+  setupDatabaseConfig,
+  setupPonder,
 } from "@/_test/setup.js";
 import { onchainEnum, onchainTable } from "@/drizzle/onchain.js";
 import { ZERO_CHECKPOINT_STRING } from "@/utils/checkpoint.js";
@@ -12,7 +12,7 @@ import { createIndexingCache } from "./cache.js";
 import { createHistoricalIndexingStore } from "./historical.js";
 
 beforeEach(setupCommon);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("flush() insert", async (context) => {
@@ -23,20 +23,14 @@ test("flush() insert", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
+  const app = await setupPonder(context, { schema });
+
+  const indexingCache = createIndexingCache(app, {
+    crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
   });
 
-  const indexingCache = createIndexingCache({
-    common: context.common,
-    schemaBuild: { schema },
-    checkpoint: ZERO_CHECKPOINT_STRING,
-  });
-
-  await database.transaction(async (client, tx) => {
-    const indexingStore = createHistoricalIndexingStore({
-      common: context.common,
-      schemaBuild: { schema },
+  await app.database.transaction(async (client, tx) => {
+    const indexingStore = createHistoricalIndexingStore(app, {
       indexingCache,
       db: tx,
       client,
@@ -68,21 +62,14 @@ test("flush() update", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
+  const app = await setupPonder(context, { schema });
+
+  const indexingCache = createIndexingCache(app, {
+    crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
   });
 
-  const indexingCache = createIndexingCache({
-    common: context.common,
-    schemaBuild: { schema },
-    checkpoint: ZERO_CHECKPOINT_STRING,
-  });
-
-  await database.transaction(async (client, tx) => {
-    const indexingStore = createHistoricalIndexingStore({
-      common: context.common,
-
-      schemaBuild: { schema },
+  await app.database.transaction(async (client, tx) => {
+    const indexingStore = createHistoricalIndexingStore(app, {
       indexingCache,
       db: tx,
       client,
@@ -152,20 +139,14 @@ test("flush() encoding", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
+  const app = await setupPonder(context, { schema });
+
+  const indexingCache = createIndexingCache(app, {
+    crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
   });
 
-  const indexingCache = createIndexingCache({
-    common: context.common,
-    schemaBuild: { schema },
-    checkpoint: ZERO_CHECKPOINT_STRING,
-  });
-
-  await database.transaction(async (client, tx) => {
-    const indexingStore = createHistoricalIndexingStore({
-      common: context.common,
-      schemaBuild: { schema },
+  await app.database.transaction(async (client, tx) => {
+    const indexingStore = createHistoricalIndexingStore(app, {
       indexingCache,
       db: tx,
       client,
@@ -214,20 +195,14 @@ test("flush() encoding escape", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
+  const app = await setupPonder(context, { schema });
+
+  const indexingCache = createIndexingCache(app, {
+    crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
   });
 
-  const indexingCache = createIndexingCache({
-    common: context.common,
-    schemaBuild: { schema },
-    checkpoint: ZERO_CHECKPOINT_STRING,
-  });
-
-  await database.transaction(async (client, tx) => {
-    const indexingStore = createHistoricalIndexingStore({
-      common: context.common,
-      schemaBuild: { schema },
+  await app.database.transaction(async (client, tx) => {
+    const indexingStore = createHistoricalIndexingStore(app, {
       indexingCache,
       db: tx,
       client,
@@ -273,22 +248,16 @@ test("commit() evicts rows", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingCache = createIndexingCache({
-    common: context.common,
-    schemaBuild: { schema },
-    checkpoint: ZERO_CHECKPOINT_STRING,
+  const indexingCache = createIndexingCache(app, {
+    crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
   });
 
   context.common.options.indexingCacheMaxBytes = 0;
 
-  await database.transaction(async (client, tx) => {
-    const indexingStore = createHistoricalIndexingStore({
-      common: context.common,
-      schemaBuild: { schema },
+  await app.database.transaction(async (client, tx) => {
+    const indexingStore = createHistoricalIndexingStore(app, {
       indexingCache,
       db: tx,
       client,

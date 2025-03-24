@@ -1,8 +1,8 @@
 import {
   setupCleanup,
   setupCommon,
-  setupDatabaseServices,
-  setupIsolatedDatabase,
+  setupDatabaseConfig,
+  setupPonder,
 } from "@/_test/setup.js";
 import { onchainEnum, onchainTable } from "@/drizzle/onchain.js";
 import {
@@ -17,7 +17,7 @@ import { beforeEach, expect, test } from "vitest";
 import { createRealtimeIndexingStore } from "./realtime.js";
 
 beforeEach(setupCommon);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("find", async (context) => {
@@ -28,15 +28,9 @@ test("find", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // empty
 
@@ -67,15 +61,9 @@ test("insert", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // single
 
@@ -213,15 +201,9 @@ test("update", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // setup
 
@@ -278,15 +260,9 @@ test("delete", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // no entry
 
@@ -323,15 +299,9 @@ test("sql", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // setup
 
@@ -383,8 +353,6 @@ test("sql", async (context) => {
 });
 
 test("onchain table", async (context) => {
-  const { database } = await setupDatabaseServices(context);
-
   const schema = {
     account: pgTable("account", (p) => ({
       address: p.text().primaryKey(),
@@ -392,11 +360,9 @@ test("onchain table", async (context) => {
     })),
   };
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
+
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // check error
 
@@ -416,15 +382,9 @@ test("missing rows", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // error
 
@@ -444,15 +404,9 @@ test("notNull", async (context) => {
       balance: p.bigint(),
     })),
   };
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  let indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  let indexingStore = createRealtimeIndexingStore(app);
 
   // insert
 
@@ -474,11 +428,7 @@ test("notNull", async (context) => {
     })),
   };
 
-  indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  indexingStore = createRealtimeIndexingStore(app);
 
   let error = await indexingStore
     .insert(schema.account)
@@ -503,15 +453,9 @@ test("default", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({ address: zeroAddress });
 
@@ -530,15 +474,9 @@ test("$default", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({ address: zeroAddress });
 
@@ -560,15 +498,9 @@ test("$onUpdateFn", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   // insert
 
@@ -591,17 +523,11 @@ test("array", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
   // dynamic size
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({
     address: zeroAddress,
@@ -630,15 +556,9 @@ test("enum", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({
     address: zeroAddress,
@@ -665,15 +585,9 @@ test("json bigint", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   const error = await indexingStore
     .insert(schema.account)
@@ -701,15 +615,9 @@ test("bigint array", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({
     address: zeroAddress,
@@ -734,15 +642,9 @@ test("bytes", async (context) => {
     })),
   };
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema },
-  });
+  const app = await setupPonder(context, { schema });
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    database,
-    schemaBuild: { schema },
-  });
+  const indexingStore = createRealtimeIndexingStore(app);
 
   await indexingStore.insert(schema.account).values({
     address: zeroAddress,

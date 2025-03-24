@@ -1,8 +1,8 @@
 import {
   setupCleanup,
   setupCommon,
-  setupDatabaseServices,
-  setupIsolatedDatabase,
+  setupDatabaseConfig,
+  setupPonder,
 } from "@/_test/setup.js";
 import { setupAnvil } from "@/_test/setup.js";
 import {
@@ -10,7 +10,6 @@ import {
   getNetwork,
   testClient,
 } from "@/_test/utils.js";
-import { buildConfigAndIndexingFunctions } from "@/build/configAndIndexingFunctions.js";
 import type { BlockFilter, Event, Filter, Fragment } from "@/internal/types.js";
 import { createHistoricalSync } from "@/sync-historical/index.js";
 import {
@@ -21,7 +20,6 @@ import {
 import { drainAsyncGenerator } from "@/utils/generators.js";
 import type { Interval } from "@/utils/interval.js";
 import { promiseWithResolvers } from "@/utils/promiseWithResolvers.js";
-import { createRequestQueue } from "@/utils/requestQueue.js";
 import { _eth_getBlockByNumber } from "@/utils/rpc.js";
 import { beforeEach, expect, test, vi } from "vitest";
 import { getFragments } from "./fragments.js";
@@ -39,7 +37,7 @@ import {
 
 beforeEach(setupCommon);
 beforeEach(setupAnvil);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("splitEvents()", async () => {
@@ -109,50 +107,32 @@ test("splitEvents()", async () => {
 });
 
 test("getPerChainOnRealtimeSyncEvent() handles block", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const intervalsCache = new Map<
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >();
-  for (const source of sources) {
-    for (const { fragment } of getFragments(source.filter)) {
-      intervalsCache.set(source.filter, [{ fragment, intervals: [] }]);
+  for (const filter of app.indexingBuild.filters) {
+    for (const { fragment } of getFragments(filter)) {
+      intervalsCache.set(filter, [{ fragment, intervals: [] }]);
     }
   }
 
   await testClient.mine({ blocks: 1 });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue,
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache,
   });
 
-  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent({
-    common: context.common,
-    network,
-    sources,
-    syncStore,
+  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent(app, {
     syncProgress,
   });
 
-  const block = await _eth_getBlockByNumber(requestQueue, {
+  const block = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
     blockNumber: 1,
   });
 
@@ -171,28 +151,19 @@ test("getPerChainOnRealtimeSyncEvent() handles block", async (context) => {
 });
 
 test("getPerChainOnRealtimeSyncEvent() handles finalize", async (context) => {
-  const { database, syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const intervalsCache = new Map<
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >();
-  for (const source of sources) {
-    for (const { fragment } of getFragments(source.filter)) {
-      intervalsCache.set(source.filter, [{ fragment, intervals: [] }]);
+  for (const filter of app.indexingBuild.filters) {
+    for (const { fragment } of getFragments(filter)) {
+      intervalsCache.set(filter, [{ fragment, intervals: [] }]);
     }
   }
 
@@ -200,23 +171,15 @@ test("getPerChainOnRealtimeSyncEvent() handles finalize", async (context) => {
 
   await testClient.mine({ blocks: 1 });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue,
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache,
   });
 
-  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent({
-    common: context.common,
-    network,
-    sources,
-    syncStore,
+  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent(app, {
     syncProgress,
   });
 
-  const block = await _eth_getBlockByNumber(requestQueue, {
+  const block = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
     blockNumber: 1,
   });
 
@@ -238,14 +201,14 @@ test("getPerChainOnRealtimeSyncEvent() handles finalize", async (context) => {
 
   expect(event.type).toBe("finalize");
 
-  const blocks = await database.qb.sync
+  const blocks = await app.database.qb.sync
     .selectFrom("blocks")
     .selectAll()
     .execute();
 
   expect(blocks).toHaveLength(1);
 
-  const intervals = await database.qb.sync
+  const intervals = await app.database.qb.sync
     .selectFrom("intervals")
     .selectAll()
     .execute();
@@ -255,28 +218,18 @@ test("getPerChainOnRealtimeSyncEvent() handles finalize", async (context) => {
 });
 
 test("getPerChainOnRealtimeSyncEvent() handles reorg", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const intervalsCache = new Map<
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >();
-  for (const source of sources) {
-    for (const { fragment } of getFragments(source.filter)) {
-      intervalsCache.set(source.filter, [{ fragment, intervals: [] }]);
+  for (const filter of app.indexingBuild.filters) {
+    for (const { fragment } of getFragments(filter)) {
+      intervalsCache.set(filter, [{ fragment, intervals: [] }]);
     }
   }
 
@@ -284,23 +237,15 @@ test("getPerChainOnRealtimeSyncEvent() handles reorg", async (context) => {
 
   await testClient.mine({ blocks: 1 });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue,
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache,
   });
 
-  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent({
-    common: context.common,
-    network,
-    sources,
-    syncStore,
+  const onRealtimeSyncEvent = getPerChainOnRealtimeSyncEvent(app, {
     syncProgress,
   });
 
-  const block = await _eth_getBlockByNumber(requestQueue, {
+  const block = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
     blockNumber: 1,
   });
 
@@ -325,57 +270,30 @@ test("getPerChainOnRealtimeSyncEvent() handles reorg", async (context) => {
 });
 
 test("getLocalEventGenerator()", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  const syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  const syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
-  const eventGenerator = getLocalEventGenerator({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
+  const eventGenerator = getLocalEventGenerator(app, {
     localSyncGenerator: syncGenerator,
     from: getChainCheckpoint({ syncProgress, network, tag: "start" })!,
     to: getChainCheckpoint({ syncProgress, network, tag: "finalized" })!,
@@ -387,57 +305,30 @@ test("getLocalEventGenerator()", async (context) => {
 });
 
 test("getLocalEventGenerator() pagination", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 2 });
 
   // finalized block: 2
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  const syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  const syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
-  const eventGenerator = getLocalEventGenerator({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
+  const eventGenerator = getLocalEventGenerator(app, {
     localSyncGenerator: syncGenerator,
     from: getChainCheckpoint({ syncProgress, network, tag: "start" })!,
     to: getChainCheckpoint({ syncProgress, network, tag: "finalized" })!,
@@ -449,55 +340,34 @@ test("getLocalEventGenerator() pagination", async (context) => {
 });
 
 test("getLocalSyncGenerator()", async (context) => {
-  const { database, syncStore } = await setupDatabaseServices(context);
   const network = getNetwork();
 
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
   network.finalityBlockCount = 0;
 
-  const historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  const syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  const syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
   await drainAsyncGenerator(syncGenerator);
 
-  const intervals = await database.qb.sync
+  const intervals = await app.database.qb.sync
     .selectFrom("intervals")
     .selectAll()
     .execute();
@@ -507,48 +377,27 @@ test("getLocalSyncGenerator()", async (context) => {
 });
 
 test("getLocalSyncGenerator() with partial cache", async (context) => {
-  const { database, syncStore } = await setupDatabaseServices(context);
   const network = getNetwork();
 
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
   network.finalityBlockCount = 0;
 
-  let historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  let historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  let syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  let syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  let syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  let syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
@@ -557,39 +406,22 @@ test("getLocalSyncGenerator() with partial cache", async (context) => {
 
   await testClient.mine({ blocks: 1 });
 
-  historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
   await drainAsyncGenerator(syncGenerator);
 
-  const intervals = await database.qb.sync
+  const intervals = await app.database.qb.sync
     .selectFrom("intervals")
     .selectAll()
     .execute();
@@ -599,87 +431,46 @@ test("getLocalSyncGenerator() with partial cache", async (context) => {
 });
 
 test("getLocalSyncGenerator() with full cache", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  let historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue,
+  let historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  let syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  let syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  let syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  let syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
   await drainAsyncGenerator(syncGenerator);
 
-  historicalSync = await createHistoricalSync({
-    common: context.common,
-    network,
-    syncStore,
-    sources,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
   });
 
-  syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue: createRequestQueue({
-      network,
-      common: context.common,
-    }),
+  syncProgress = await getLocalSyncProgress(app, {
     intervalsCache: historicalSync.intervalsCache,
   });
 
-  syncGenerator = getLocalSyncGenerator({
-    common: context.common,
-    network,
+  syncGenerator = getLocalSyncGenerator(app, {
     syncProgress,
     historicalSync,
   });
 
   const insertSpy = vi.spyOn(syncStore, "insertIntervals");
-  const requestSpy = vi.spyOn(requestQueue, "request");
+  const requestSpy = vi.spyOn(app.indexingBuild.requestQueue, "request");
 
   const checkpoints = await drainAsyncGenerator(syncGenerator);
   expect(checkpoints).toHaveLength(1);
@@ -689,35 +480,22 @@ test("getLocalSyncGenerator() with full cache", async (context) => {
 });
 
 test("getLocalSyncProgress()", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const intervalsCache = new Map<
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >();
-  for (const source of sources) {
-    for (const { fragment } of getFragments(source.filter)) {
-      intervalsCache.set(source.filter, [{ fragment, intervals: [] }]);
+  for (const filter of app.indexingBuild.filters) {
+    for (const { fragment } of getFragments(filter)) {
+      intervalsCache.set(filter, [{ fragment, intervals: [] }]);
     }
   }
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue,
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache,
   });
 
@@ -728,39 +506,26 @@ test("getLocalSyncProgress()", async (context) => {
 });
 
 test("getLocalSyncProgress() future end block", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
 
   // @ts-ignore
   config.blocks.Blocks.endBlock = 12;
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const intervalsCache = new Map<
     Filter,
     { fragment: Fragment; intervals: Interval[] }[]
   >();
-  for (const source of sources) {
-    for (const { fragment } of getFragments(source.filter)) {
-      intervalsCache.set(source.filter, [{ fragment, intervals: [] }]);
+  for (const filter of app.indexingBuild.filters) {
+    for (const { fragment } of getFragments(filter)) {
+      intervalsCache.set(filter, [{ fragment, intervals: [] }]);
     }
   }
 
-  const syncProgress = await getLocalSyncProgress({
-    common: context.common,
-    sources,
-    network,
-    requestQueue,
+  const syncProgress = await getLocalSyncProgress(app, {
     intervalsCache,
   });
 
@@ -1023,69 +788,38 @@ test("mergeAsyncGeneratorsWithEventOrder()", async () => {
 });
 
 test("createSync()", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
-  const sync = await createSync({
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
-    syncStore,
+  config.ordering = "multichain";
+
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   expect(sync).toBeDefined();
 });
 
 test("getEvents() multichain", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   const events = await drainAsyncGenerator(sync.getEvents()).then((events) =>
@@ -1097,37 +831,21 @@ test("getEvents() multichain", async (context) => {
 });
 
 test("getEvents() omnichain", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "omnichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 1 });
 
   // finalized block: 1
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "omnichain",
   });
 
   const events = await drainAsyncGenerator(sync.getEvents()).then((events) =>
@@ -1139,124 +857,71 @@ test("getEvents() omnichain", async (context) => {
 });
 
 test("getEvents() mulitchain updates status", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 2 });
 
   // finalized block: 2
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await drainAsyncGenerator(sync.getEvents());
 
   const status = sync.getStatus();
 
-  expect(status[network.name]?.ready).toBe(false);
-  expect(status[network.name]?.block?.number).toBe(2);
+  expect(status).toMatchInlineSnapshot();
 });
 
 test("getEvents() omnichain updates status", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "omnichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 2 });
 
   // finalized block: 2
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await drainAsyncGenerator(sync.getEvents());
 
   const status = sync.getStatus();
 
-  expect(status[network.name]?.ready).toBe(false);
-  expect(status[network.name]?.block?.number).toBe(2);
+  expect(status).toMatchInlineSnapshot();
 });
 
 test("getEvents() with initial checkpoint", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 2 });
 
   // finalized block: 2
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: MAX_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   const events = await drainAsyncGenerator(sync.getEvents()).then((events) =>
@@ -1271,34 +936,18 @@ test("getEvents() with initial checkpoint", async (context) => {
 // We need a way to figure out how to make sure queues are drained
 // when shutting down.
 test.skip("startRealtime()", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   await testClient.mine({ blocks: 2 });
 
-  const sync = await createSync({
-    syncStore,
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await drainAsyncGenerator(sync.getEvents());
@@ -1307,39 +956,22 @@ test.skip("startRealtime()", async (context) => {
 
   const status = sync.getStatus();
 
-  expect(status[network.name]?.ready).toBe(true);
-  expect(status[network.name]?.block?.number).toBe(1);
+  expect(status).toMatchInlineSnapshot();
 });
 
 test("onEvent() multichain handles block", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const promise = promiseWithResolvers<void>();
   const events: Event[] = [];
 
   await testClient.mine({ blocks: 1 });
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async (event) => {
       if (event.type === "block") {
         events.push(...event.events);
@@ -1348,7 +980,6 @@ test("onEvent() multichain handles block", async (context) => {
     },
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await drainAsyncGenerator(sync.getEvents());
@@ -1361,33 +992,17 @@ test("onEvent() multichain handles block", async (context) => {
 });
 
 test("onEvent() omnichain handles block", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources, networks } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "omnichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   // finalized block: 0
 
   const promise = promiseWithResolvers<void>();
 
-  const sync = await createSync({
-    common: context.common,
-    indexingBuild: {
-      sources,
-      networks,
-    },
-    requestQueues: [
-      createRequestQueue({
-        network: networks[0]!,
-        common: context.common,
-      }),
-    ],
-    syncStore,
+  const sync = await createSync(app, {
     onRealtimeEvent: async (event) => {
       if (event.type === "block") {
         promise.resolve();
@@ -1395,7 +1010,6 @@ test("onEvent() omnichain handles block", async (context) => {
     },
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "omnichain",
   });
 
   await testClient.mine({ blocks: 1 });
@@ -1408,36 +1022,20 @@ test("onEvent() omnichain handles block", async (context) => {
 });
 
 test("onEvent() handles finalize", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const promise = promiseWithResolvers<void>();
   let checkpoint: string;
 
   // finalized block: 0
 
-  network.finalityBlockCount = 2;
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async (event) => {
       if (event.type === "finalize") {
         checkpoint = event.checkpoint;
@@ -1446,7 +1044,6 @@ test("onEvent() handles finalize", async (context) => {
     },
     onFatalError: () => {},
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await testClient.mine({ blocks: 4 });
@@ -1461,39 +1058,23 @@ test("onEvent() handles finalize", async (context) => {
 });
 
 test("onEvent() kills realtime when finalized", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-
+  config.ordering = "multichain";
   // @ts-ignore
   config.blocks.Blocks.endBlock = 1;
 
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const promise = promiseWithResolvers<void>();
   let checkpoint: string;
 
   // finalized block: 0
 
-  network.finalityBlockCount = 0;
+  app.indexingBuild.network.finalityBlockCount = 0;
 
-  const sync = await createSync({
-    syncStore,
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async (event) => {
       if (event.type === "finalize") {
         checkpoint = event.checkpoint;
@@ -1519,39 +1100,22 @@ test("onEvent() kills realtime when finalized", async (context) => {
 test.todo("onEvent() handles reorg");
 
 test("onEvent() handles errors", async (context) => {
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  config.ordering = "multichain";
+  const app = await setupPonder(context, { config, indexingFunctions });
 
   const promise = promiseWithResolvers<void>();
 
   // finalized block: 0
 
-  const sync = await createSync({
-    syncStore,
-
-    common: context.common,
-    indexingBuild: { sources, networks: [network] },
-    requestQueues: [
-      createRequestQueue({
-        network,
-        common: context.common,
-      }),
-    ],
+  const sync = await createSync(app, {
     onRealtimeEvent: async () => {},
     onFatalError: () => {
       promise.resolve();
     },
     crashRecoveryCheckpoint: ZERO_CHECKPOINT_STRING,
-    ordering: "multichain",
   });
 
   await testClient.mine({ blocks: 4 });

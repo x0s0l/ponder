@@ -15,7 +15,7 @@ import {
 } from "./index.js";
 
 export const createHistoricalIndexingStore = (
-  app: PonderApp,
+  app: Omit<PonderApp, "indexingBuild" | "apiBuild">,
   {
     indexingCache,
     db,

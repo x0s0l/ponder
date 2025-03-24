@@ -12,9 +12,9 @@ import { onError } from "./error.js";
 export type Server = { hono: Hono };
 
 export async function createServer(
-  app: Omit<PonderApp, "indexingBuild">,
+  app: Omit<PonderApp, "buildId" | "indexingBuild">,
 ): Promise<Server> {
-  const userStore = await createUserStore(app);
+  const userStore = createUserStore(app);
 
   const metricsMiddleware = createMiddleware(async (c, next) => {
     const matchedPathLabels = c.req.matchedRoutes

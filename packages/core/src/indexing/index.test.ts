@@ -4,8 +4,8 @@ import {
   setupAnvil,
   setupCleanup,
   setupCommon,
+  setupDatabaseConfig,
   setupDatabaseServices,
-  setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import { deployErc20, deployMulticall, mintErc20 } from "@/_test/simulate.js";
 import {
@@ -34,7 +34,7 @@ import { type ReadOnlyClient, getPonderActions } from "./ponderActions.js";
 
 beforeEach(setupCommon);
 beforeEach(setupAnvil);
-beforeEach(setupIsolatedDatabase);
+beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 const account = onchainTable("account", (p) => ({
