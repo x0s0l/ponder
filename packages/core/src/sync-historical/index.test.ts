@@ -20,12 +20,9 @@ import {
   getAccountsConfigAndIndexingFunctions,
   getBlocksConfigAndIndexingFunctions,
   getErc20ConfigAndIndexingFunctions,
-  getNetwork,
   getPairWithFactoryConfigAndIndexingFunctions,
   testClient,
 } from "@/_test/utils.js";
-import { buildConfigAndIndexingFunctions } from "@/build/configAndIndexingFunctions.js";
-import { createRequestQueue } from "@/utils/requestQueue.js";
 import {
   encodeFunctionData,
   encodeFunctionResult,
@@ -218,6 +215,8 @@ test("sync() with trace filter", async (context) => {
   });
   const app = await setupPonder(context, { config, indexingFunctions });
 
+  const _request = app.indexingBuild.requestQueue.request;
+
   const request = async (request: any) => {
     if (request.method === "debug_traceBlockByNumber") {
       if (request.params[0] === "0x1") return Promise.resolve([]);
@@ -249,7 +248,7 @@ test("sync() with trace filter", async (context) => {
       }
     }
 
-    return app.indexingBuild.requestQueue.request(request);
+    return _request(request);
   };
 
   // @ts-ignore
@@ -273,7 +272,7 @@ test("sync() with trace filter", async (context) => {
     .selectAll()
     .execute();
 
-  expect(intervals).toHaveLength(1);
+  expect(intervals).toHaveLength(2);
 });
 
 test("sync() with transaction filter", async (context) => {
@@ -314,7 +313,7 @@ test("sync() with transaction filter", async (context) => {
     .execute();
 
   // transaction:from and transaction:to
-  expect(intervals).toHaveLength(2);
+  expect(intervals).toHaveLength(4);
 });
 
 test("sync() with transfer filter", async (context) => {
@@ -328,6 +327,8 @@ test("sync() with transfer filter", async (context) => {
     address: ALICE,
   });
   const app = await setupPonder(context, { config, indexingFunctions });
+
+  const _request = app.indexingBuild.requestQueue.request;
 
   const request = async (request: any) => {
     if (request.method === "debug_traceBlockByNumber") {
@@ -350,52 +351,35 @@ test("sync() with transfer filter", async (context) => {
       }
     }
 
-    return app.indexingBuild.requestQueue.request(request);
+    return _request(request);
   };
 
   // @ts-ignore
   app.indexingBuild.requestQueue.request = request;
 
   const historicalSync = await createHistoricalSync(app, {
-    common: context.common,
-    network,
-    sources: sources.filter(({ filter }) => filter.type === "transfer"),
-    syncStore,
-    requestQueue: {
-      ...requestQueue,
-
-      request,
-    },
     onFatalError: () => {},
   });
 
   await historicalSync.sync([1, 1]);
 
-  const transactions = await database.qb.sync
+  const transactions = await app.database.qb.sync
     .selectFrom("transactions")
     .selectAll()
     .execute();
 
   expect(transactions).toHaveLength(1);
 
-  const intervals = await database.qb.sync
+  const intervals = await app.database.qb.sync
     .selectFrom("intervals")
     .selectAll()
     .execute();
 
   // transfer:from and transfer:to
-  expect(intervals).toHaveLength(2);
+  expect(intervals).toHaveLength(4);
 });
 
 test("sync() with many filters", async (context) => {
-  const { syncStore, database } = await setupDatabaseServices(context);
-
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
   const { address } = await deployErc20({ sender: ALICE });
   await mintErc20({
     erc20: address,
@@ -404,38 +388,43 @@ test("sync() with many filters", async (context) => {
     sender: ALICE,
   });
 
-  const { sources: erc20Sources } = await buildConfigAndIndexingFunctions({
-    ...getErc20ConfigAndIndexingFunctions({
-      address,
-    }),
+  const blockSources = getBlocksConfigAndIndexingFunctions({
+    interval: 1,
   });
-  const { sources: blockSources } = await buildConfigAndIndexingFunctions({
-    ...getBlocksConfigAndIndexingFunctions({
-      interval: 1,
-    }),
-  });
+  const erc20Sources = getErc20ConfigAndIndexingFunctions({ address });
 
+  const config = {
+    ...blockSources.config,
+    ...erc20Sources.config,
+  };
+  const indexingFunctions = [
+    ...blockSources.indexingFunctions,
+    ...erc20Sources.indexingFunctions,
+  ];
+
+  const app = await setupPonder(context, {
+    config,
+    indexingFunctions,
+  });
   const historicalSync = await createHistoricalSync(app, {
-    common: context.common,
-    network,
-    sources: [...erc20Sources, ...blockSources],
-    syncStore,
-    requestQueue,
     onFatalError: () => {},
   });
 
   await historicalSync.sync([1, 2]);
 
-  const logs = await database.qb.sync.selectFrom("logs").selectAll().execute();
+  const logs = await app.database.qb.sync
+    .selectFrom("logs")
+    .selectAll()
+    .execute();
   expect(logs).toHaveLength(1);
 
-  const blocks = await database.qb.sync
+  const blocks = await app.database.qb.sync
     .selectFrom("blocks")
     .selectAll()
     .execute();
   expect(blocks).toHaveLength(2);
 
-  const intervals = await database.qb.sync
+  const intervals = await app.database.qb.sync
     .selectFrom("intervals")
     .selectAll()
     .execute();
@@ -500,7 +489,11 @@ test("sync() with partial cache", async (context) => {
   let spy = vi.spyOn(app.indexingBuild.requestQueue, "request");
 
   // @ts-ignore
-  sources[0]!.filter.address = [sources[0]!.filter.address, zeroAddress];
+  app.indexingBuild.filters[0]!.address = [
+    // @ts-ignore
+    app.indexingBuild.filters[0]!.address,
+    zeroAddress,
+  ];
 
   historicalSync = await createHistoricalSync(app, {
     onFatalError: () => {},
@@ -564,27 +557,30 @@ test("syncBlock() with cache", async (context) => {
     sender: ALICE,
   });
 
-  const { sources: erc20Sources } = await buildConfigAndIndexingFunctions({
-    ...getErc20ConfigAndIndexingFunctions({
-      address,
-    }),
+  const blockSources = getBlocksConfigAndIndexingFunctions({
+    interval: 1,
   });
-  const { sources: blockSources } = await buildConfigAndIndexingFunctions({
-    ...getBlocksConfigAndIndexingFunctions({
-      interval: 1,
-    }),
+  const erc20Sources = getErc20ConfigAndIndexingFunctions({ address });
+
+  const config = {
+    ...blockSources.config,
+    ...erc20Sources.config,
+  };
+  const indexingFunctions = [
+    ...blockSources.indexingFunctions,
+    ...erc20Sources.indexingFunctions,
+  ];
+
+  const app = await setupPonder(context, {
+    config,
+    indexingFunctions,
   });
 
   const historicalSync = await createHistoricalSync(app, {
-    common: context.common,
-    network,
-    sources: [...erc20Sources, ...blockSources],
-    syncStore,
-    requestQueue,
     onFatalError: () => {},
   });
 
-  const spy = vi.spyOn(requestQueue, "request");
+  const spy = vi.spyOn(app.indexingBuild.requestQueue, "request");
 
   await historicalSync.sync([1, 2]);
 
@@ -611,7 +607,7 @@ test("syncAddress() handles many addresses", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
+  const { config, indexingFunctions } =
     getPairWithFactoryConfigAndIndexingFunctions({
       address,
     });
@@ -623,8 +619,11 @@ test("syncAddress() handles many addresses", async (context) => {
 
   await historicalSync.sync([1, 13]);
 
-  const logs = await database.qb.sync.selectFrom("logs").selectAll().execute();
-  const factories = await database.qb.sync
+  const logs = await app.database.qb.sync
+    .selectFrom("logs")
+    .selectAll()
+    .execute();
+  const factories = await app.database.qb.sync
     .selectFrom("factory_addresses")
     .selectAll()
     .execute();

@@ -11,7 +11,6 @@ import {
   encodeEventTopics,
   getAbiItem,
   parseAbiItem,
-  toFunctionSignature,
 } from "viem";
 import type { Config } from "../config/index.js";
 
@@ -44,7 +43,7 @@ export const toSafeName = ({
     );
 
     if (overloadedFunctionNames.has(item.name)) {
-      return toFunctionSignature(item).split("function ")[1]!;
+      return formatAbiItem(item).split("function ")[1]!;
     }
     return `${item.name}()`;
   }

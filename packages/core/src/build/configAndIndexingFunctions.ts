@@ -597,6 +597,7 @@ export async function buildConfigAndIndexingFunctions({
         }
       } else {
         if (registeredCallTraceEvents.length > 0) {
+          perNetworkIndexingBuild.get(network.name)!.filters.push(filter);
           for (const functionName of registeredCallTraceEvents) {
             const indexingFunction = indexingFunctions.find(
               (f) => `${source.name}.${functionName}` === f.name,
