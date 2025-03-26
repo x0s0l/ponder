@@ -5,11 +5,10 @@ import {
   setupCleanup,
   setupCommon,
   setupDatabaseConfig,
-  setupDatabaseServices,
+  setupPonder,
 } from "@/_test/setup.js";
 import { deployErc20, deployMulticall, mintErc20 } from "@/_test/simulate.js";
-import { anvil, getNetwork, publicClient } from "@/_test/utils.js";
-import { createRequestQueue } from "@/utils/requestQueue.js";
+import { anvil, publicClient } from "@/_test/utils.js";
 import {
   type Hex,
   type Transport,
@@ -28,18 +27,8 @@ beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("default", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  });
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app);
 
   assertType<Transport>(transport);
 
@@ -61,21 +50,9 @@ test("default", async (context) => {
 });
 
 test("request() block dependent method", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { syncStore } = await setupDatabaseServices(context);
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app)({ chain: anvil });
   const blockNumber = await publicClient.getBlockNumber();
-
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  })({
-    chain: anvil,
-  });
 
   const response1 = await transport.request({
     method: "eth_getBlockByNumber",
@@ -99,12 +76,6 @@ test("request() block dependent method", async (context) => {
 });
 
 test("request() non-block dependent method", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
   const { address } = await deployErc20({ sender: ALICE });
   await mintErc20({
     erc20: address,
@@ -113,16 +84,10 @@ test("request() non-block dependent method", async (context) => {
     sender: ALICE,
   });
 
-  const { syncStore } = await setupDatabaseServices(context);
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app)({ chain: anvil });
   const blockNumber = await publicClient.getBlockNumber();
   const block = await publicClient.getBlock({ blockNumber: blockNumber });
-
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  })({
-    chain: anvil,
-  });
 
   const response1 = await transport.request({
     method: "eth_getTransactionByHash",
@@ -146,17 +111,8 @@ test("request() non-block dependent method", async (context) => {
 });
 
 test("request() non-cached method", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { syncStore } = await setupDatabaseServices(context);
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  })({
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app)({
     chain: anvil,
   });
 
@@ -170,18 +126,8 @@ test("request() non-cached method", async (context) => {
 });
 
 test("request() multicall", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  })({
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app)({
     chain: anvil,
   });
 
@@ -224,7 +170,7 @@ test("request() multicall", async (context) => {
 
   const insertSpy = vi.spyOn(syncStore, "insertRpcRequestResults");
   const getSpy = vi.spyOn(syncStore, "getRpcRequestResults");
-  const requestSpy = vi.spyOn(requestQueue, "request");
+  const requestSpy = vi.spyOn(app.indexingBuild.requestQueue, "request");
 
   let result = decodeFunctionResult({
     abi: multicall3Abi,
@@ -300,18 +246,8 @@ test("request() multicall", async (context) => {
 });
 
 test("request() multicall empty", async (context) => {
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common: context.common,
-  });
-
-  const { syncStore } = await setupDatabaseServices(context);
-
-  const transport = cachedTransport({
-    requestQueue,
-    syncStore,
-  })({
+  const app = await setupPonder(context);
+  const transport = cachedTransport(app)({
     chain: anvil,
   });
 

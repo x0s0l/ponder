@@ -100,7 +100,7 @@ test("isLogFactoryMatched()", async (context) => {
     });
 
   const app = await setupPonder(context, { config, indexingFunctions });
-  const filter = app.indexingBuild[0]!.filters[0] as LogFilter<LogFactory>;
+  const filter = app.indexingBuild.filters[0] as LogFilter<LogFactory>;
 
   const rpcLogs = await _eth_getLogs(requestQueue, {
     fromBlock: 2,
@@ -151,7 +151,7 @@ test("isLogFilterMatched()", async (context) => {
 
   const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = app.indexingBuild[0]!.filters[0] as LogFilter<undefined>;
+  const filter = app.indexingBuild.filters[0] as LogFilter<undefined>;
 
   const rpcLogs = await _eth_getLogs(requestQueue, {
     fromBlock: 2,
@@ -185,7 +185,7 @@ test("isBlockFilterMatched", async (context) => {
 
   const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = app.indexingBuild[0]!.filters[0] as BlockFilter;
+  const filter = app.indexingBuild.filters[0] as BlockFilter;
 
   const rpcBlock = await _eth_getBlockByNumber(requestQueue, {
     blockNumber: 0,
@@ -227,7 +227,7 @@ test("isTransactionFilterMatched()", async (context) => {
   const app = await setupPonder(context, { config, indexingFunctions });
 
   // transaction:from
-  const filter = app.indexingBuild[0]!.filters[1] as TransactionFilter<
+  const filter = app.indexingBuild.filters[1] as TransactionFilter<
     undefined,
     undefined
   >;
@@ -271,7 +271,7 @@ test("isTransferFilterMatched()", async (context) => {
   const app = await setupPonder(context, { config, indexingFunctions });
 
   // transfer:from
-  const filter = app.indexingBuild[0]!.filters[3] as TransferFilter<
+  const filter = app.indexingBuild.filters[3] as TransferFilter<
     undefined,
     undefined
   >;
@@ -341,7 +341,7 @@ test("isTraceFilterMatched()", async (context) => {
 
   const app = await setupPonder(context, { config, indexingFunctions });
 
-  const filter = app.indexingBuild[0]!.filters[1] as TraceFilter<
+  const filter = app.indexingBuild.filters[1] as TraceFilter<
     undefined,
     undefined
   >;

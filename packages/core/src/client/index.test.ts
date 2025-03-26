@@ -2,7 +2,7 @@ import {
   setupCleanup,
   setupCommon,
   setupDatabaseConfig,
-  setupDatabaseServices,
+  setupPonder,
 } from "@/_test/setup.js";
 import { bigint, hex, onchainTable } from "@/drizzle/onchain.js";
 import type { QueryWithTypings } from "drizzle-orm";
@@ -27,15 +27,13 @@ test("client.db", async (context) => {
     balance: p.bigint(),
   }));
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema: { account } },
-  });
+  const app = await setupPonder(context, { schema: { account } });
 
-  globalThis.PONDER_DATABASE = database;
+  globalThis.PONDER_DATABASE = app.database;
 
-  const app = new Hono().use(
+  const hono = new Hono().use(
     client({
-      db: database.qb.drizzleReadonly,
+      db: app.database.qb.drizzleReadonly,
       schema: { account },
     }),
   );
@@ -45,7 +43,7 @@ test("client.db", async (context) => {
     params: [],
   };
 
-  let response = await app.request(`/sql/db?${queryToParams(query)}`);
+  let response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(200);
   const result = await response.json();
   expect(result.rows).toStrictEqual([]);
@@ -55,30 +53,30 @@ test("client.db", async (context) => {
     params: [],
   };
 
-  response = await app.request(`/sql/db?${queryToParams(query)}`);
+  response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(200);
 });
 
 test("client.db error", async (context) => {
-  const { database } = await setupDatabaseServices(context);
-  globalThis.PONDER_DATABASE = database;
+  const app = await setupPonder(context);
+  globalThis.PONDER_DATABASE = app.database;
 
-  const app = new Hono().use(
+  const hono = new Hono().use(
     client({
-      db: database.qb.drizzleReadonly,
+      db: app.database.qb.drizzleReadonly,
       schema: {},
     }),
   );
 
   globalThis.PONDER_NAMESPACE_BUILD = "public";
-  globalThis.PONDER_DATABASE = database;
+  globalThis.PONDER_DATABASE = app.database;
 
   const query = {
     sql: "SELECT * FROM account",
     params: [],
   };
 
-  const response = await app.request(`/sql/db?${queryToParams(query)}`);
+  const response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(500);
   expect(await response.text()).toContain('relation "account" does not exist');
 });
@@ -91,16 +89,16 @@ test("client.db search_path", async (context) => {
     balance: bigint(),
   });
 
-  const { database } = await setupDatabaseServices(context, {
-    namespaceBuild: "Ponder",
-    schemaBuild: { schema: { account: schemaAccount } },
+  const app = await setupPonder(context, {
+    namespace: "Ponder",
+    schema: { account: schemaAccount },
   });
 
-  globalThis.PONDER_DATABASE = database;
+  globalThis.PONDER_DATABASE = app.database;
 
-  const app = new Hono().use(
+  const hono = new Hono().use(
     client({
-      db: database.qb.drizzleReadonly,
+      db: app.database.qb.drizzleReadonly,
       schema: { account: schemaAccount },
     }),
   );
@@ -110,7 +108,7 @@ test("client.db search_path", async (context) => {
     params: [],
   };
 
-  const response = await app.request(`/sql/db?${queryToParams(query)}`);
+  const response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(200);
 });
 
@@ -122,14 +120,14 @@ test("client.db readonly", async (context) => {
     balance: p.bigint(),
   }));
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema: { account } },
+  const app = await setupPonder(context, {
+    schema: { account },
   });
 
-  globalThis.PONDER_DATABASE = database;
+  globalThis.PONDER_DATABASE = app.database;
 
-  const app = new Hono().use(
-    client({ db: database.qb.drizzleReadonly, schema: { account } }),
+  const hono = new Hono().use(
+    client({ db: app.database.qb.drizzleReadonly, schema: { account } }),
   );
 
   const query = {
@@ -137,7 +135,7 @@ test("client.db readonly", async (context) => {
     params: [],
   };
 
-  const response = await app.request(`/sql/db?${queryToParams(query)}`);
+  const response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(500);
   expect(await response.text()).toContain("InsertStmt not supported");
 });
@@ -150,14 +148,14 @@ test("client.db recursive", async (context) => {
     balance: p.bigint(),
   }));
 
-  const { database } = await setupDatabaseServices(context, {
-    schemaBuild: { schema: { account } },
+  const app = await setupPonder(context, {
+    schema: { account },
   });
 
-  globalThis.PONDER_DATABASE = database;
+  globalThis.PONDER_DATABASE = app.database;
 
-  const app = new Hono().use(
-    client({ db: database.qb.drizzleReadonly, schema: { account } }),
+  const hono = new Hono().use(
+    client({ db: app.database.qb.drizzleReadonly, schema: { account } }),
   );
 
   const query = {
@@ -173,7 +171,7 @@ FROM infinite_cte;`,
     params: [],
   };
 
-  const response = await app.request(`/sql/db?${queryToParams(query)}`);
+  const response = await hono.request(`/sql/db?${queryToParams(query)}`);
   expect(response.status).toBe(500);
   expect(await response.text()).toContain("Recursive CTEs not supported");
 });

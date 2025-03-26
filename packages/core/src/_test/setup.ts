@@ -1,8 +1,6 @@
 import { createBuild } from "@/build/index.js";
-import { buildSchema } from "@/build/schema.js";
 import type { Config } from "@/config/index.js";
 import { createDatabase } from "@/database/index.js";
-import { createRealtimeIndexingStore } from "@/indexing-store/realtime.js";
 import type { Common } from "@/internal/common.js";
 import { createLogger } from "@/internal/logger.js";
 import { MetricsService } from "@/internal/metrics.js";
@@ -12,17 +10,19 @@ import { createTelemetry } from "@/internal/telemetry.js";
 import type {
   DatabaseConfig,
   IndexingFunctions,
+  Network,
   PerChainPonderApp,
-  PonderApp,
+  PreBuild,
   Schema,
 } from "@/internal/types.js";
-import { createSyncStore } from "@/sync-store/index.js";
 import { createPglite } from "@/utils/pglite.js";
+import { createRequestQueue } from "@/utils/requestQueue.js";
 import type { PGlite } from "@electric-sql/pglite";
-import type { Hono } from "hono";
+import { Hono } from "hono";
 import pg from "pg";
+import { http } from "viem";
 import { type TestContext, afterAll } from "vitest";
-import { poolId, testClient } from "./utils.js";
+import { anvil, poolId, testClient } from "./utils.js";
 
 declare module "vitest" {
   export interface TestContext {
@@ -46,10 +46,6 @@ export function setupCommon(context: TestContext) {
   const shutdown = createShutdown();
   const telemetry = createTelemetry({ options, logger, shutdown });
   context.common = { options, logger, metrics, telemetry, shutdown };
-}
-
-export function setupCleanup(context: TestContext) {
-  return context.common.shutdown.kill;
 }
 
 const pgliteInstances = new Map<number, PGlite>();
@@ -173,58 +169,185 @@ export async function setupDatabaseConfig(context: TestContext) {
   }
 }
 
-export async function setupPonder(
-  context: TestContext,
-  overrides: Partial<{
+export async function setupPonder<
+  overrides extends Partial<{
+    buildId: string;
     namespace: string;
     schema: Schema;
     config: Config;
     indexingFunctions: IndexingFunctions;
     app: Hono;
   }> = {},
-): Promise<PerChainPonderApp> {
-  const { statements } = buildSchema({
+>(
+  context: TestContext,
+  overrides: overrides = {} as overrides,
+): Promise<
+  {} extends overrides
+    ? Omit<PerChainPonderApp, "indexingBuild" | "apiBuild" | "schemaBuild">
+    : PerChainPonderApp
+> {
+  const build = await createBuild({ common: context.common });
+
+  const config =
+    overrides.config ??
+    ({
+      ordering: "multichain",
+      networks: {
+        mainnet: {
+          chainId: 1,
+          transport: http(`http://127.0.0.1:8545/${poolId}`),
+        },
+      },
+      contracts: {},
+      accounts: {},
+      blocks: {},
+    } satisfies Config);
+
+  const namespace = overrides.namespace ?? "public";
+  const preBuild = {
+    ordering: "multichain",
+    databaseConfig: context.databaseConfig,
+  } satisfies PreBuild;
+
+  const schemaBuildResult = build.compileSchema({
     schema: overrides.schema ?? {},
   });
 
-  const build = await createBuild({ common: context.common });
-
-  // const preBuildResult =  build.preCompile({ config: overrides.config ??  });
+  if (schemaBuildResult.status === "error") {
+    throw schemaBuildResult.error;
+  }
 
   const database = await createDatabase({
     common: context.common,
-    namespace: overrides.namespace ?? "public",
-    preBuild: {
-      databaseConfig: context.databaseConfig,
-    },
-    schemaBuild: {
-      schema: overrides.schema ?? {},
-      statements,
+    namespace,
+    preBuild,
+    schemaBuild: schemaBuildResult.result,
+  });
+
+  if (Object.keys(overrides).length === 0) {
+    const app = {
+      common: context.common,
+      buildId:
+        overrides.buildId ??
+        build.compileBuildId({
+          configResult: { config, contentHash: "" },
+          schemaResult: { schema: overrides.schema ?? {}, contentHash: "" },
+          indexingResult: {
+            indexingFunctions: overrides.indexingFunctions ?? [],
+            contentHash: "",
+          },
+        }),
+      preBuild,
+      namespace,
+      database,
+    } satisfies Omit<
+      PerChainPonderApp,
+      "indexingBuild" | "apiBuild" | "schemaBuild"
+    >;
+
+    globalThis.PONDER_COMMON = context.common;
+    globalThis.PONDER_BUILD_ID = app.buildId;
+    globalThis.PONDER_PRE_BUILD = preBuild;
+    globalThis.PONDER_NAMESPACE_BUILD = namespace;
+
+    globalThis.PONDER_DATABASE = database;
+
+    await database.migrate({ buildId: app.buildId });
+    await database.migrateSync().catch((err) => {
+      console.log(err);
+      throw err;
+    });
+
+    // @ts-ignore
+    return app;
+  }
+
+  const indexingBuildResult = await build.compileIndexing({
+    configResult: { config, contentHash: "" },
+    indexingResult: {
+      indexingFunctions: overrides.indexingFunctions ?? [],
+      contentHash: "",
     },
   });
 
-  await database.migrate({
-    buildId: overrides.indexingBuild?.buildId ?? "abc",
+  const apiBuildResult = await build.compileApi({
+    apiResult: { app: overrides.app ?? new Hono() },
   });
+
+  if (indexingBuildResult.status === "error") {
+    throw indexingBuildResult.error;
+  }
+
+  if (apiBuildResult.status === "error") {
+    throw apiBuildResult.error;
+  }
+
+  if (indexingBuildResult.result.length !== 1) {
+    throw new Error("Expected exactly one indexing build");
+  }
+
+  const app = {
+    common: context.common,
+    buildId:
+      overrides.buildId ??
+      build.compileBuildId({
+        configResult: { config, contentHash: "" },
+        schemaResult: { schema: overrides.schema ?? {}, contentHash: "" },
+        indexingResult: {
+          indexingFunctions: overrides.indexingFunctions ?? [],
+          contentHash: "",
+        },
+      }),
+    preBuild,
+    namespace,
+    schemaBuild: schemaBuildResult.result,
+    indexingBuild: indexingBuildResult.result[0]!,
+    apiBuild: apiBuildResult.result,
+    database,
+  } satisfies PerChainPonderApp;
+
+  globalThis.PONDER_COMMON = context.common;
+  globalThis.PONDER_BUILD_ID = app.buildId;
+  globalThis.PONDER_PRE_BUILD = preBuild;
+  globalThis.PONDER_NAMESPACE_BUILD = namespace;
+  globalThis.PONDER_SCHEMA_BUILD = schemaBuildResult.result;
+  globalThis.PONDER_INDEXING_BUILD = indexingBuildResult.result;
+  globalThis.PONDER_API_BUILD = apiBuildResult.result;
+  globalThis.PONDER_DATABASE = database;
+
+  await database.migrate({ buildId: app.buildId });
 
   await database.migrateSync().catch((err) => {
     console.log(err);
     throw err;
   });
 
-  const syncStore = createSyncStore({ common: context.common, database });
+  return app;
+}
 
-  const indexingStore = createRealtimeIndexingStore({
-    common: context.common,
-    schemaBuild: { schema: overrides?.schema ?? {} },
-    database,
-  });
-
+export function setupNetwork() {
   return {
-    database,
-    indexingStore,
-    syncStore,
-  };
+    name: "mainnet",
+    chainId: 1,
+    chain: anvil,
+    transport: http(`http://127.0.0.1:8545/${poolId}`)({ chain: anvil }),
+    maxRequestsPerSecond: 50,
+    pollingInterval: 1_000,
+    finalityBlockCount: 1,
+    disableCache: false,
+  } satisfies Network;
+}
+
+export function setupRequestQueue(context: TestContext) {
+  const requestQueue = createRequestQueue({
+    common: context.common,
+    network: setupNetwork(),
+  });
+  return requestQueue;
+}
+
+export function setupCleanup(context: TestContext) {
+  return context.common.shutdown.kill;
 }
 
 /**

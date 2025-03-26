@@ -312,10 +312,10 @@ export async function buildConfigAndIndexingFunctions({
     // Get indexing function that were registered for this contract
     const registeredLogEvents: string[] = [];
     const registeredCallTraceEvents: string[] = [];
-    for (const eventName of Object.keys(indexingFunctions)) {
+    for (const { name } of indexingFunctions) {
       // log event
-      if (eventName.includes(":")) {
-        const [logContractName, logEventName] = eventName.split(":") as [
+      if (name.includes(":")) {
+        const [logContractName, logEventName] = name.split(":") as [
           string,
           string,
         ];
@@ -325,8 +325,8 @@ export async function buildConfigAndIndexingFunctions({
       }
 
       //  trace event
-      if (eventName.includes(".")) {
-        const [functionContractName, functionName] = eventName.split(".") as [
+      if (name.includes(".")) {
+        const [functionContractName, functionName] = name.split(".") as [
           string,
           string,
         ];

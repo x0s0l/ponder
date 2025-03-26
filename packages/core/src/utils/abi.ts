@@ -1,12 +1,16 @@
 import { getDuplicateElements } from "@/utils/duplicates.js";
-import type { Abi, AbiEvent, AbiFunction } from "abitype";
+import {
+  type Abi,
+  type AbiEvent,
+  type AbiFunction,
+  formatAbiItem,
+} from "abitype";
 import {
   type GetEventArgs,
   type Hex,
   encodeEventTopics,
   getAbiItem,
   parseAbiItem,
-  toEventSignature,
   toFunctionSignature,
 } from "viem";
 import type { Config } from "../config/index.js";
@@ -27,7 +31,7 @@ export const toSafeName = ({
     );
 
     if (overloadedEventNames.has(item.name)) {
-      return toEventSignature(item).split("event ")[1]!;
+      return formatAbiItem(item).split("event ")[1]!;
     }
     return item.name;
   } else {
