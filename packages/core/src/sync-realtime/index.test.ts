@@ -5,7 +5,7 @@ import {
   setupCleanup,
   setupCommon,
   setupDatabaseConfig,
-  setupDatabaseServices,
+  setupPonder,
 } from "@/_test/setup.js";
 import {
   createPair,
@@ -20,13 +20,10 @@ import {
   getAccountsConfigAndIndexingFunctions,
   getBlocksConfigAndIndexingFunctions,
   getErc20ConfigAndIndexingFunctions,
-  getNetwork,
   getPairWithFactoryConfigAndIndexingFunctions,
   testClient,
 } from "@/_test/utils.js";
-import { buildConfigAndIndexingFunctions } from "@/build/configAndIndexingFunctions.js";
 import type { LogFactory, LogFilter } from "@/internal/types.js";
-import { createRequestQueue } from "@/utils/requestQueue.js";
 import { _eth_getBlockByNumber } from "@/utils/rpc.js";
 import {
   encodeFunctionData,
@@ -43,28 +40,13 @@ beforeEach(setupDatabaseConfig);
 beforeEach(setupCleanup);
 
 test("createRealtimeSyncService()", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -73,34 +55,20 @@ test("createRealtimeSyncService()", async (context) => {
 });
 
 test("start() handles block", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   await testClient.mine({ blocks: 1 });
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -115,34 +83,20 @@ test("start() handles block", async (context) => {
 });
 
 test("start() no-op when receiving same block twice", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork();
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   await testClient.mine({ blocks: 1 });
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -153,7 +107,9 @@ test("start() no-op when receiving same block twice", async (context) => {
   });
   await queue.onIdle();
 
-  await _eth_getBlockByNumber(requestQueue, { blockNumber: 1 }).then(
+  await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
+    blockNumber: 1,
+  }).then(
     // @ts-ignore
     (block) => queue.add({ block }),
   );
@@ -164,34 +120,20 @@ test("start() no-op when receiving same block twice", async (context) => {
 });
 
 test("start() gets missing block", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   await testClient.mine({ blocks: 2 });
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -207,36 +149,22 @@ test("start() gets missing block", async (context) => {
 });
 
 test("start() retries on error", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   await testClient.mine({ blocks: 1 });
 
-  const requestSpy = vi.spyOn(requestQueue, "request");
+  const requestSpy = vi.spyOn(app.indexingBuild.requestQueue, "request");
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -254,34 +182,20 @@ test("start() retries on error", async (context) => {
 });
 
 test("kill()", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   await testClient.mine({ blocks: 2 });
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: vi.fn(),
   });
@@ -295,15 +209,6 @@ test("kill()", async (context) => {
 });
 
 test("handleBlock() block event with log", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
   const { address } = await deployErc20({ sender: ALICE });
   await mintErc20({
     erc20: address,
@@ -312,13 +217,11 @@ test("handleBlock() block event with log", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } = getErc20ConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getErc20ConfigAndIndexingFunctions({
     address,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -326,15 +229,12 @@ test("handleBlock() block event with log", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 1,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 1 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -367,15 +267,6 @@ test("handleBlock() block event with log", async (context) => {
 });
 
 test("handleBlock() block event with log factory", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
   const { address } = await deployFactory({ sender: ALICE });
   const { result: pair } = await createPair({
     factory: address,
@@ -389,16 +280,14 @@ test("handleBlock() block event with log factory", async (context) => {
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
+  const { config, indexingFunctions } =
     getPairWithFactoryConfigAndIndexingFunctions({
       address,
     });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const filter = sources[0]!.filter as LogFilter<LogFactory>;
+  const filter = app.indexingBuild.filters[0]! as LogFilter<LogFactory>;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -406,15 +295,12 @@ test("handleBlock() block event with log factory", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 1,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 1 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -483,22 +369,11 @@ test("handleBlock() block event with log factory", async (context) => {
 });
 
 test("handleBlock() block event with block", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -506,15 +381,12 @@ test("handleBlock() block event with block", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -549,29 +421,17 @@ test("handleBlock() block event with block", async (context) => {
 });
 
 test("handleBlock() block event with transaction", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
   await transferEth({
     to: BOB,
     amount: parseEther("1"),
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
-    getAccountsConfigAndIndexingFunctions({
-      address: ALICE,
-    });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
+  const { config, indexingFunctions } = getAccountsConfigAndIndexingFunctions({
+    address: ALICE,
   });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -579,15 +439,17 @@ test("handleBlock() block event with transaction", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources: sources.filter(({ filter }) => filter.type === "transaction"),
+  // remove trace filters
+  app.indexingBuild.filters = app.indexingBuild.filters.filter(
+    (f) => f.type === "transaction",
+  );
+
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -621,29 +483,19 @@ test("handleBlock() block event with transaction", async (context) => {
 });
 
 test("handleBlock() block event with transfer", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
   const { hash } = await transferEth({
     to: BOB,
     amount: parseEther("1"),
     sender: ALICE,
   });
 
-  const { config, rawIndexingFunctions } =
-    getAccountsConfigAndIndexingFunctions({
-      address: ALICE,
-    });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
+  const { config, indexingFunctions } = getAccountsConfigAndIndexingFunctions({
+    address: ALICE,
   });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
+
+  const _request = app.indexingBuild.requestQueue.request;
 
   const request = async (request: any) => {
     if (request.method === "debug_traceBlockByHash") {
@@ -664,8 +516,11 @@ test("handleBlock() block event with transfer", async (context) => {
       ]);
     }
 
-    return requestQueue.request(request);
+    return _request(request);
   };
+
+  // @ts-ignore
+  app.indexingBuild.requestQueue.request = request;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -673,19 +528,12 @@ test("handleBlock() block event with transfer", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue: {
-      ...requestQueue,
-      // @ts-ignore
-      request,
-    },
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -719,15 +567,6 @@ test("handleBlock() block event with transfer", async (context) => {
 });
 
 test("handleBlock() block event with trace", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
   const { address } = await deployErc20({ sender: ALICE });
   await mintErc20({
     erc20: address,
@@ -742,22 +581,22 @@ test("handleBlock() block event with trace", async (context) => {
     sender: ALICE,
   });
 
-  const block2 = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 2,
-  });
-
-  const block3 = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 3,
-  });
-
-  const { config, rawIndexingFunctions } = getErc20ConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getErc20ConfigAndIndexingFunctions({
     address,
     includeCallTraces: true,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
+
+  const block2 = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
+    blockNumber: 2,
   });
+
+  const block3 = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
+    blockNumber: 3,
+  });
+
+  const _request = app.indexingBuild.requestQueue.request;
 
   const request = async (request: any) => {
     if (request.method === "debug_traceBlockByHash") {
@@ -806,8 +645,11 @@ test("handleBlock() block event with trace", async (context) => {
       return Promise.resolve([]);
     }
 
-    return requestQueue.request(request);
+    return _request(request);
   };
+
+  // @ts-ignore
+  app.indexingBuild.requestQueue.request = request;
 
   const data: Extract<RealtimeSyncEvent, { type: "block" }>[] = [];
 
@@ -815,19 +657,12 @@ test("handleBlock() block event with trace", async (context) => {
     data.push(_data);
   });
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 1,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 1 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue: {
-      ...requestQueue,
-      // @ts-ignore
-      request,
-    },
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -870,26 +705,16 @@ test("handleBlock() block event with trace", async (context) => {
 });
 
 test("handleBlock() finalize event", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   const data: Extract<RealtimeSyncEvent, { type: "finalize" }>[] = [];
 
@@ -897,11 +722,7 @@ test("handleBlock() finalize event", async (context) => {
     if (_data.type === "finalize") data.push(_data);
   });
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -925,34 +746,20 @@ test("handleBlock() finalize event", async (context) => {
 });
 
 test("handleReorg() finds common ancestor", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
   const onEvent = vi.fn();
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent,
     onFatalError: vi.fn(),
   });
@@ -964,7 +771,9 @@ test("handleReorg() finds common ancestor", async (context) => {
     initialChildAddresses: new Map(),
   });
 
-  await _eth_getBlockByNumber(requestQueue, { blockNumber: 2 }).then(
+  await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
+    blockNumber: 2,
+  }).then(
     // @ts-ignore
     (block) => queue.add({ block }),
   );
@@ -980,34 +789,20 @@ test("handleReorg() finds common ancestor", async (context) => {
 });
 
 test("handleReorg() throws error for deep reorg", async (context) => {
-  const { common } = context;
-  await setupDatabaseServices(context);
-
-  const network = getNetwork({ finalityBlockCount: 2 });
-  const requestQueue = createRequestQueue({
-    network,
-    common,
-  });
-
-  const { config, rawIndexingFunctions } = getBlocksConfigAndIndexingFunctions({
+  const { config, indexingFunctions } = getBlocksConfigAndIndexingFunctions({
     interval: 1,
   });
-  const { sources } = await buildConfigAndIndexingFunctions({
-    config,
-    rawIndexingFunctions,
-  });
+  const app = await setupPonder(context, { config, indexingFunctions });
+  app.indexingBuild.network.finalityBlockCount = 2;
 
-  const finalizedBlock = await _eth_getBlockByNumber(requestQueue, {
-    blockNumber: 0,
-  });
+  const finalizedBlock = await _eth_getBlockByNumber(
+    app.indexingBuild.requestQueue,
+    { blockNumber: 0 },
+  );
 
   const spy = vi.fn();
 
-  const realtimeSync = createRealtimeSync({
-    common,
-    network,
-    requestQueue,
-    sources,
+  const realtimeSync = createRealtimeSync(app, {
     onEvent: vi.fn(),
     onFatalError: spy,
   });
@@ -1020,7 +815,7 @@ test("handleReorg() throws error for deep reorg", async (context) => {
   });
   await queue.onIdle();
 
-  const block = await _eth_getBlockByNumber(requestQueue, {
+  const block = await _eth_getBlockByNumber(app.indexingBuild.requestQueue, {
     blockNumber: 3,
   });
 
