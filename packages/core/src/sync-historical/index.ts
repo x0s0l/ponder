@@ -12,7 +12,6 @@ import type {
   Source,
   SyncBlock,
   SyncLog,
-  SyncTrace,
   SyncTransactionReceipt,
   TraceFilter,
   TransactionFilter,
@@ -23,7 +22,9 @@ import {
   getChildAddress,
   isAddressFactory,
   isAddressMatched,
+  isBlockFilterMatched,
   isLogFactoryMatched,
+  isLogFilterMatched,
   isTraceFilterMatched,
   isTransactionFilterMatched,
   isTransferFilterMatched,
@@ -51,7 +52,6 @@ import {
   type Address,
   type Hash,
   type RpcError,
-  hexToBigInt,
   hexToNumber,
   toHex,
   zeroHash,
@@ -59,11 +59,22 @@ import {
 
 export type HistoricalSync = {
   intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
-  /**
-   * Extract raw data for `interval` and return the closest-to-tip block
-   * that is synced.
-   */
-  sync(interval: Interval): Promise<SyncBlock | undefined>;
+  calculateMissingIntervals(params: { interval: Interval }): Promise<
+    IntervalWithFilter[]
+  >;
+  sync1(params: { missingIntervals: IntervalWithFilter[] }): Promise<{
+    logs: Map<IntervalWithFilter, SyncLog[]>;
+  }>;
+  sync2(params: {
+    interval: Interval;
+    missingIntervals: IntervalWithFilter[];
+    sync1Result: { logs: Map<IntervalWithFilter, SyncLog[]> };
+  }): Promise<void>;
+};
+
+type IntervalWithFilter = {
+  interval: Interval;
+  filter: FilterWithoutBlocks;
 };
 
 type CreateHistoricalSyncParameters = {
@@ -82,35 +93,6 @@ export const createHistoricalSync = async (
    * Flag to fetch transaction receipts through _eth_getBlockReceipts (true) or _eth_getTransactionReceipt (false)
    */
   let isBlockReceipts = true;
-  /**
-   * Blocks that have already been extracted.
-   * Note: All entries are deleted at the end of each call to `sync()`.
-   */
-  const blockCache = new Map<number, Promise<SyncBlock>>();
-  /**
-   * Traces that have already been fetched.
-   * Note: All entries are deleted at the end of each call to `sync()`.
-   */
-  const traceCache = new Map<number, Promise<SyncTrace[]>>();
-  /**
-   * Transactions that should be saved to the sync-store.
-   * Note: All entries are deleted at the end of each call to `sync()`.
-   */
-  const transactionsCache = new Set<Hash>();
-  /**
-   * Block transaction receipts that have already been fetched.
-   * Note: All entries are deleted at the end of each call to `sync()`.
-   */
-  const blockReceiptsCache = new Map<Hash, Promise<SyncTransactionReceipt[]>>();
-  /**
-   * Transaction receipts that have already been fetched.
-   * Note: All entries are deleted at the end of each call to `sync()`.
-   */
-  const transactionReceiptsCache = new Map<
-    Hash,
-    Promise<SyncTransactionReceipt>
-  >();
-
   /**
    * Data about the range passed to "eth_getLogs" share among all log
    * filters and log factories.
@@ -145,9 +127,6 @@ export const createHistoricalSync = async (
       filters: args.sources.map(({ filter }) => filter),
     });
   }
-
-  // Closest-to-tip block that has been synced.
-  let latestBlock: SyncBlock | undefined;
 
   ////////
   // Helper functions for sync tasks
@@ -273,11 +252,11 @@ export const createHistoricalSync = async (
 
     const logIds = new Set<string>();
     for (const log of logs) {
-      const id = `${log.blockHash}-${log.logIndex}`;
+      const id = `${log.blockNumber}-${log.logIndex}`;
       if (logIds.has(id)) {
         args.common.logger.warn({
           service: "sync",
-          msg: `Detected invalid eth_getLogs response. Duplicate log index ${log.logIndex} for block ${log.blockHash}.`,
+          msg: `Detected invalid eth_getLogs response. Duplicate log index ${log.logIndex} for block ${log.blockNumber}.`,
         });
       } else {
         logIds.add(id);
@@ -298,58 +277,8 @@ export const createHistoricalSync = async (
     return logs;
   };
 
-  /**
-   * Extract block, using `blockCache` to avoid fetching
-   * the same block twice. Also, update `latestBlock`.
-   *
-   * @param number Block to be extracted
-   *
-   * Note: This function could more accurately skip network requests by taking
-   * advantage of `syncStore.hasBlock` and `syncStore.hasTransaction`.
-   */
-  const syncBlock = async (number: number): Promise<SyncBlock> => {
-    let block: SyncBlock;
-
-    /**
-     * `blockCache` contains all blocks that have been extracted during the
-     * current call to `sync()`. If `number` is present in `blockCache` use it,
-     * otherwise, request the block and add it to `blockCache` and the sync-store.
-     */
-
-    if (blockCache.has(number)) {
-      block = await blockCache.get(number)!;
-    } else {
-      const _block = _eth_getBlockByNumber(args.requestQueue, {
-        blockNumber: toHex(number),
-      });
-      blockCache.set(number, _block);
-      block = await _block;
-
-      // Update `latestBlock` if `block` is closer to tip.
-      if (
-        hexToBigInt(block.number) >= hexToBigInt(latestBlock?.number ?? "0x0")
-      ) {
-        latestBlock = block;
-      }
-    }
-
-    return block;
-  };
-
-  const syncTrace = async (block: number) => {
-    if (traceCache.has(block)) {
-      return await traceCache.get(block)!;
-    } else {
-      const traces = _debug_traceBlockByNumber(args.requestQueue, {
-        blockNumber: block,
-      });
-      traceCache.set(block, traces);
-      return await traces;
-    }
-  };
-
   const syncTransactionReceipts = async (
-    block: Hash,
+    block: SyncBlock,
     transactionHashes: Set<Hash>,
   ): Promise<SyncTransactionReceipt[]> => {
     if (transactionHashes.size === 0) {
@@ -359,7 +288,7 @@ export const createHistoricalSync = async (
     if (isBlockReceipts === false) {
       const transactionReceipts = await Promise.all(
         Array.from(transactionHashes).map((hash) =>
-          syncTransactionReceipt(hash),
+          _eth_getTransactionReceipt(args.requestQueue, { hash }),
         ),
       );
 
@@ -368,7 +297,9 @@ export const createHistoricalSync = async (
 
     let blockReceipts: SyncTransactionReceipt[];
     try {
-      blockReceipts = await syncBlockReceipts(block);
+      blockReceipts = await _eth_getBlockReceipts(args.requestQueue, {
+        blockHash: block.hash,
+      });
     } catch (_error) {
       const error = _error as Error;
       args.common.logger.warn({
@@ -401,30 +332,6 @@ export const createHistoricalSync = async (
     return transactionReceipts;
   };
 
-  const syncTransactionReceipt = async (transaction: Hash) => {
-    if (transactionReceiptsCache.has(transaction)) {
-      return await transactionReceiptsCache.get(transaction)!;
-    } else {
-      const receipt = _eth_getTransactionReceipt(args.requestQueue, {
-        hash: transaction,
-      });
-      transactionReceiptsCache.set(transaction, receipt);
-      return await receipt;
-    }
-  };
-
-  const syncBlockReceipts = async (block: Hash) => {
-    if (blockReceiptsCache.has(block)) {
-      return await blockReceiptsCache.get(block)!;
-    } else {
-      const blockReceipts = _eth_getBlockReceipts(args.requestQueue, {
-        blockHash: block,
-      });
-      blockReceiptsCache.set(block, blockReceipts);
-      return await blockReceipts;
-    }
-  };
-
   /** Extract and insert the log-based addresses that match `filter` + `interval`. */
   const syncLogFactory = async (factory: LogFactory, interval: Interval) => {
     const logs = await syncLogsDynamic({
@@ -452,327 +359,10 @@ export const createHistoricalSync = async (
     });
   };
 
-  /**
-   * Return all addresses that match `filter` after extracting addresses
-   * that match `filter` and `interval`.
-   */
-  const syncAddressFactory = async (
-    factory: Factory,
-    interval: Interval,
-  ): Promise<Map<Address, number>> => {
-    await syncLogFactory(factory, interval);
-    // Note: `factory` must refer to the same original `factory` in `filter`
-    // and not be a recovered factory from `recoverFilter`.
-    return args.syncStore.getChildAddresses({ factory });
-  };
-
-  ////////
-  // Helper function for filter types
-  ////////
-
-  const syncLogFilter = async (filter: LogFilter, interval: Interval) => {
-    let logs: SyncLog[];
-    if (isAddressFactory(filter.address)) {
-      const childAddresses = await syncAddressFactory(filter.address, interval);
-      logs = await syncLogsDynamic({
-        filter,
-        interval,
-        address:
-          childAddresses.size >=
-          args.common.options.factoryAddressCountThreshold
-            ? undefined
-            : Array.from(childAddresses.keys()),
-      });
-
-      logs = logs.filter((log) =>
-        isAddressMatched({
-          address: log.address,
-          blockNumber: hexToNumber(log.blockNumber),
-          childAddresses,
-        }),
-      );
-    } else {
-      logs = await syncLogsDynamic({
-        filter,
-        interval,
-        address: filter.address,
-      });
-    }
-
-    await args.syncStore.insertLogs({ logs, chainId: args.network.chainId });
-
-    const blocks = await Promise.all(
-      logs.map((log) => syncBlock(hexToNumber(log.blockNumber))),
-    );
-
-    // Validate that logs point to the valid transaction hash in the block
-    for (let i = 0; i < logs.length; i++) {
-      const log = logs[i]!;
-      const block = blocks[i]!;
-
-      if (block.hash !== log.blockHash) {
-        throw new Error(
-          `Detected inconsistent RPC responses. 'log.blockHash' ${log.blockHash} does not match 'block.hash' ${block.hash}`,
-        );
-      }
-
-      if (
-        block.transactions.find((t) => t.hash === log.transactionHash) ===
-        undefined
-      ) {
-        if (log.transactionHash === zeroHash) {
-          args.common.logger.warn({
-            service: "sync",
-            msg: `Detected log with empty transaction hash in block ${block.hash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
-          });
-        } else {
-          throw new Error(
-            `Detected inconsistent RPC responses. 'log.transactionHash' ${log.transactionHash} not found in 'block.transactions' ${block.hash}`,
-          );
-        }
-      }
-    }
-
-    const transactionHashes = new Set(logs.map((l) => l.transactionHash));
-    for (const hash of transactionHashes) {
-      transactionsCache.add(hash);
-    }
-
-    if (shouldGetTransactionReceipt(filter)) {
-      const transactionReceipts = await Promise.all(
-        dedupe(blocks, (b) => b.hash).map((block) => {
-          const blockTransactionHashes = new Set<Hash>();
-
-          for (const log of logs) {
-            if (log.blockHash === block.hash) {
-              if (log.transactionHash === zeroHash) {
-                args.common.logger.warn({
-                  service: "sync",
-                  msg: `Detected log with empty transaction hash in block ${log.blockHash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
-                });
-              } else {
-                blockTransactionHashes.add(log.transactionHash);
-              }
-            }
-          }
-
-          return syncTransactionReceipts(block.hash, blockTransactionHashes);
-        }),
-      ).then((receipts) => receipts.flat());
-
-      await args.syncStore.insertTransactionReceipts({
-        transactionReceipts,
-        chainId: args.network.chainId,
-      });
-    }
-  };
-
-  const syncBlockFilter = async (filter: BlockFilter, interval: Interval) => {
-    const baseOffset = (interval[0] - filter.offset) % filter.interval;
-    const offset = baseOffset === 0 ? 0 : filter.interval - baseOffset;
-
-    // Determine which blocks are matched by the block filter.
-    const requiredBlocks: number[] = [];
-    for (let b = interval[0] + offset; b <= interval[1]; b += filter.interval) {
-      requiredBlocks.push(b);
-    }
-
-    await Promise.all(requiredBlocks.map((number) => syncBlock(number)));
-  };
-
-  const syncTransactionFilter = async (
-    filter: TransactionFilter,
-    interval: Interval,
-  ) => {
-    const fromChildAddresses = isAddressFactory(filter.fromAddress)
-      ? await syncAddressFactory(filter.fromAddress, interval)
-      : undefined;
-
-    const toChildAddresses = isAddressFactory(filter.toAddress)
-      ? await syncAddressFactory(filter.toAddress, interval)
-      : undefined;
-
-    const blocks = await Promise.all(
-      intervalRange(interval).map((number) => syncBlock(number)),
-    );
-
-    const transactionHashes: Set<Hash> = new Set();
-    const requiredBlocks: Set<SyncBlock> = new Set();
-
-    for (const block of blocks) {
-      for (const transaction of block.transactions) {
-        if (isTransactionFilterMatched({ filter, transaction }) === false) {
-          continue;
-        }
-
-        if (
-          isAddressFactory(filter.fromAddress) &&
-          isAddressMatched({
-            address: transaction.from,
-            blockNumber: Number(block.number),
-            childAddresses: fromChildAddresses!,
-          }) === false
-        ) {
-          continue;
-        }
-
-        if (
-          isAddressFactory(filter.toAddress) &&
-          isAddressMatched({
-            address: transaction.to ?? undefined,
-            blockNumber: Number(block.number),
-            childAddresses: toChildAddresses!,
-          }) === false
-        ) {
-          continue;
-        }
-
-        transactionHashes.add(transaction.hash);
-        requiredBlocks.add(block);
-      }
-    }
-
-    for (const hash of transactionHashes) {
-      transactionsCache.add(hash);
-    }
-
-    const transactionReceipts = await Promise.all(
-      Array.from(requiredBlocks).map((block) => {
-        const blockTransactionHashes = new Set(
-          block.transactions
-            .filter((t) => transactionHashes.has(t.hash))
-            .map((t) => t.hash),
-        );
-        return syncTransactionReceipts(block.hash, blockTransactionHashes);
-      }),
-    ).then((receipts) => receipts.flat());
-
-    await args.syncStore.insertTransactionReceipts({
-      transactionReceipts,
-      chainId: args.network.chainId,
-    });
-  };
-
-  const syncTraceOrTransferFilter = async (
-    filter: TraceFilter | TransferFilter,
-    interval: Interval,
-  ) => {
-    const fromChildAddresses = isAddressFactory(filter.fromAddress)
-      ? await syncAddressFactory(filter.fromAddress, interval)
-      : undefined;
-
-    const toChildAddresses = isAddressFactory(filter.toAddress)
-      ? await syncAddressFactory(filter.toAddress, interval)
-      : undefined;
-
-    const requiredBlocks: Set<Hash> = new Set();
-    const traces = await Promise.all(
-      intervalRange(interval).map(async (number) => {
-        let traces = await syncTrace(number);
-
-        // remove unmatched traces
-        traces = traces.filter((trace) => {
-          if (
-            filter.type === "trace" &&
-            isTraceFilterMatched({
-              filter,
-              trace: trace.trace,
-              block: { number: BigInt(number) },
-            }) === false
-          ) {
-            return false;
-          }
-
-          if (
-            filter.type === "transfer" &&
-            isTransferFilterMatched({
-              filter,
-              trace: trace.trace,
-              block: { number: BigInt(number) },
-            }) === false
-          ) {
-            return false;
-          }
-
-          if (
-            isAddressFactory(filter.fromAddress) &&
-            isAddressMatched({
-              address: trace.trace.from,
-              blockNumber: number,
-              childAddresses: fromChildAddresses!,
-            }) === false
-          ) {
-            return false;
-          }
-
-          if (
-            isAddressFactory(filter.toAddress) &&
-            isAddressMatched({
-              address: trace.trace.to,
-              blockNumber: number,
-              childAddresses: toChildAddresses!,
-            }) === false
-          ) {
-            return false;
-          }
-
-          return true;
-        });
-
-        if (traces.length === 0) return [];
-
-        const block = await syncBlock(number);
-        requiredBlocks.add(block.hash);
-
-        return traces.map((trace) => {
-          const transaction = block.transactions.find(
-            (t) => t.hash === trace.transactionHash,
-          );
-
-          if (transaction === undefined) {
-            throw new Error(
-              `Detected inconsistent RPC responses. 'trace.transactionHash' ${trace.transactionHash} not found in 'block.transactions' ${block.hash}`,
-            );
-          }
-
-          transactionsCache.add(transaction.hash);
-
-          return { trace, transaction, block };
-        });
-      }),
-    ).then((traces) => traces.flat());
-
-    await args.syncStore.insertTraces({
-      traces,
-      chainId: args.network.chainId,
-    });
-
-    if (shouldGetTransactionReceipt(filter)) {
-      const transactionReceipts = await Promise.all(
-        Array.from(requiredBlocks).map((blockHash) => {
-          const blockTransactionHashes = new Set(
-            traces
-              .filter((t) => t.block.hash === blockHash)
-              .map((t) => t.transaction.hash),
-          );
-          return syncTransactionReceipts(blockHash, blockTransactionHashes);
-        }),
-      ).then((receipts) => receipts.flat());
-
-      await args.syncStore.insertTransactionReceipts({
-        transactionReceipts,
-        chainId: args.network.chainId,
-      });
-    }
-  };
-
   return {
     intervalsCache,
-    async sync(_interval) {
-      const intervalsToSync: {
-        interval: Interval;
-        filter: FilterWithoutBlocks;
-      }[] = [];
+    async calculateMissingIntervals({ interval: _interval }) {
+      const missingIntervals: IntervalWithFilter[] = [];
 
       // Determine the requests that need to be made, and which intervals need to be inserted.
       // Fragments are used to create a minimal filter, to avoid refetching data even if a filter
@@ -824,44 +414,71 @@ export const createHistoricalSync = async (
             requiredIntervals.map(({ fragment }) => fragment),
           );
 
-          intervalsToSync.push({
+          missingIntervals.push({
             filter: requiredFilter,
             interval: requiredInterval,
           });
         }
       }
 
-      await Promise.all(
-        intervalsToSync.map(async ({ filter, interval }) => {
-          // Request last block of interval
-          const blockPromise = syncBlock(interval[1]);
+      return missingIntervals;
+    },
+    async sync1({ missingIntervals }) {
+      const logsResult: Map<IntervalWithFilter, SyncLog[]> = new Map();
 
+      await Promise.all(
+        missingIntervals.map(async ({ filter, interval }) => {
           try {
             switch (filter.type) {
               case "log": {
-                await syncLogFilter(filter as LogFilter, interval);
+                let logs: SyncLog[];
+                if (isAddressFactory(filter.address)) {
+                  await syncLogFactory(filter.address, interval);
+                  const childAddresses = await args.syncStore.getChildAddresses(
+                    { factory: filter.address },
+                  );
+                  logs = await syncLogsDynamic({
+                    filter: filter as LogFilter,
+                    interval,
+                    address:
+                      childAddresses.size >=
+                      args.common.options.factoryAddressCountThreshold
+                        ? undefined
+                        : Array.from(childAddresses.keys()),
+                  });
+
+                  logs = logs.filter((log) =>
+                    isAddressMatched({
+                      address: log.address,
+                      blockNumber: hexToNumber(log.blockNumber),
+                      childAddresses,
+                    }),
+                  );
+                } else {
+                  logs = await syncLogsDynamic({
+                    filter: filter as LogFilter,
+                    interval,
+                    address: filter.address,
+                  });
+                }
+
+                logsResult.set({ filter, interval }, logs);
+
                 break;
               }
 
-              case "block": {
-                await syncBlockFilter(filter as BlockFilter, interval);
-                break;
-              }
-
-              case "transaction": {
-                await syncTransactionFilter(
-                  filter as TransactionFilter,
-                  interval,
-                );
-                break;
-              }
-
+              case "transaction":
               case "trace":
               case "transfer": {
-                await syncTraceOrTransferFilter(
-                  filter as TraceFilter | TransferFilter,
-                  interval,
-                );
+                await Promise.all([
+                  isAddressFactory(filter.fromAddress)
+                    ? syncLogFactory(filter.fromAddress, interval)
+                    : Promise.resolve(),
+                  isAddressFactory(filter.toAddress)
+                    ? syncLogFactory(filter.toAddress, interval)
+                    : Promise.resolve(),
+                ]);
+
                 break;
               }
             }
@@ -882,41 +499,216 @@ export const createHistoricalSync = async (
 
             return;
           }
-
-          await blockPromise;
         }),
       );
 
-      const blocks = await Promise.all(blockCache.values());
+      return { logs: logsResult };
+    },
+    async sync2({ interval, missingIntervals, sync1Result }) {
+      if (missingIntervals.length === 0) return;
 
-      await Promise.all([
-        args.syncStore.insertBlocks({ blocks, chainId: args.network.chainId }),
-        args.syncStore.insertTransactions({
-          transactions: blocks.flatMap((block) =>
-            block.transactions.filter(({ hash }) =>
-              transactionsCache.has(hash),
-            ),
-          ),
-          chainId: args.network.chainId,
-        }),
-      ]);
+      const blockFilters: BlockFilter[] = [];
+      const transactionFilters: TransactionFilter[] = [];
+      const traceFilters: TraceFilter[] = [];
+      const logFilters: LogFilter[] = [];
+      const transferFilters: TransferFilter[] = [];
+      const childAddresses: Map<Factory, Map<Address, number>> = new Map();
 
-      // Add corresponding intervals to the sync-store
-      // Note: this should happen after so the database doesn't become corrupted
-      if (args.network.disableCache === false) {
-        await args.syncStore.insertIntervals({
-          intervals: intervalsToSync,
-          chainId: args.network.chainId,
-        });
+      for (const { filter } of missingIntervals) {
+        switch (filter.type) {
+          case "block": {
+            blockFilters.push(filter as BlockFilter);
+            break;
+          }
+
+          case "transaction": {
+            transactionFilters.push(filter as TransactionFilter);
+            break;
+          }
+
+          case "trace": {
+            traceFilters.push(filter as TraceFilter);
+            break;
+          }
+
+          case "log": {
+            logFilters.push(filter as LogFilter);
+            break;
+          }
+
+          case "transfer": {
+            transferFilters.push(filter as TransferFilter);
+            break;
+          }
+        }
       }
 
-      blockCache.clear();
-      traceCache.clear();
-      transactionsCache.clear();
-      blockReceiptsCache.clear();
-      transactionReceiptsCache.clear();
+      // TODO(kyle) query child addresses
 
-      return latestBlock;
+      const perBlockLogs: Map<number, SyncLog[]> = new Map();
+      for (const [, logs] of sync1Result.logs) {
+        for (const log of logs) {
+          const number = hexToNumber(log.blockNumber);
+          if (perBlockLogs.has(number) === false) {
+            perBlockLogs.set(number, []);
+          }
+          perBlockLogs.get(number)!.push(log);
+        }
+      }
+
+      for (const blockNumber of intervalRange(interval)) {
+        const shouldRequestBlock =
+          blockFilters.some((filter) =>
+            isBlockFilterMatched({ filter, block }),
+          ) ||
+          transactionFilters.length > 0 ||
+          perBlockLogs.has(blockNumber);
+        const shouldRequestTraces =
+          traceFilters.length > 0 || transferFilters.length > 0;
+
+        if (shouldRequestBlock === false) continue;
+
+        const block = await _eth_getBlockByNumber(args.requestQueue, {
+          blockNumber,
+        });
+
+        const requiredTransactions = new Set<Hash>();
+        const requiredTransactionReceipts = new Set<Hash>();
+
+        if (perBlockLogs.has(blockNumber)) {
+          let logs = perBlockLogs.get(blockNumber)!;
+
+          logs = logs.filter((log) => {
+            let isMatched = false;
+            for (const filter of logFilters) {
+              const isAddressMatched = isAddressFactory(filter.address);
+              if (isLogFilterMatched({ filter, log }) && isAddressMatched) {
+                requiredTransactions.add(log.transactionHash);
+                isMatched = true;
+                if (shouldGetTransactionReceipt(filter)) {
+                  requiredTransactionReceipts.add(log.transactionHash);
+                }
+              }
+            }
+            return isMatched;
+          });
+        }
+
+        if (shouldRequestTraces) {
+          let traces = await _debug_traceBlockByNumber(args.requestQueue, {
+            blockNumber,
+          });
+
+          traces = traces.filter((trace) => {
+            let isMatched = false;
+
+            for (const filter of traceFilters) {
+              const isFromAddressMatched = isAddressFactory(filter.fromAddress)
+                ? isAddressMatched({
+                    address: trace.trace.from,
+                    blockNumber: hexToNumber(block.number),
+                    childAddresses: childAddresses.get(filter.fromAddress)!,
+                  })
+                : true;
+
+              const isToAddressMatched = isAddressFactory(filter.toAddress)
+                ? isAddressMatched({
+                    address: trace.trace.to,
+                    blockNumber: hexToNumber(block.number),
+                    childAddresses: childAddresses.get(filter.toAddress)!,
+                  })
+                : true;
+
+              if (
+                isTraceFilterMatched({ filter, trace: trace.trace, block }) &&
+                isFromAddressMatched &&
+                isToAddressMatched
+              ) {
+                requiredTransactions.add(trace.transactionHash);
+                isMatched = true;
+                if (shouldGetTransactionReceipt(filter)) {
+                  requiredTransactionReceipts.add(trace.transactionHash);
+                }
+              }
+            }
+
+            for (const filter of transferFilters) {
+              const isFromAddressMatched = isAddressFactory(filter.fromAddress)
+                ? isAddressMatched({
+                    address: trace.trace.from,
+                    blockNumber: hexToNumber(block.number),
+                    childAddresses: childAddresses.get(filter.fromAddress)!,
+                  })
+                : true;
+
+              const isToAddressMatched = isAddressFactory(filter.toAddress)
+                ? isAddressMatched({
+                    address: trace.trace.to,
+                    blockNumber: hexToNumber(block.number),
+                    childAddresses: childAddresses.get(filter.toAddress)!,
+                  })
+                : true;
+
+              if (
+                isTransferFilterMatched({
+                  filter,
+                  trace: trace.trace,
+                  block,
+                }) &&
+                isFromAddressMatched &&
+                isToAddressMatched
+              ) {
+                requiredTransactions.add(trace.transactionHash);
+                isMatched = true;
+                if (shouldGetTransactionReceipt(filter)) {
+                  requiredTransactionReceipts.add(trace.transactionHash);
+                }
+              }
+            }
+
+            return isMatched;
+          });
+        }
+
+        const transactions = block.transactions.filter((transaction) => {
+          let isMatched = requiredTransactions.has(transaction.hash);
+
+          for (const filter of transactionFilters) {
+            const isFromAddressMatched = isAddressFactory(filter.fromAddress)
+              ? isAddressMatched({
+                  address: transaction.from,
+                  blockNumber: hexToNumber(block.number),
+                  childAddresses: childAddresses.get(filter.fromAddress)!,
+                })
+              : true;
+
+            const isToAddressMatched = isAddressFactory(filter.toAddress)
+              ? isAddressMatched({
+                  address: transaction.to ?? undefined,
+                  blockNumber: hexToNumber(block.number),
+                  childAddresses: childAddresses.get(filter.toAddress)!,
+                })
+              : true;
+
+            if (
+              isTransactionFilterMatched({ filter, transaction }) &&
+              isFromAddressMatched &&
+              isToAddressMatched
+            ) {
+              requiredTransactions.add(transaction.hash);
+              requiredTransactionReceipts.add(transaction.hash);
+              isMatched = true;
+            }
+          }
+
+          return isMatched;
+        });
+
+        const transactionReceipts = await syncTransactionReceipts(
+          block,
+          requiredTransactionReceipts,
+        );
+      }
     },
   };
 };
