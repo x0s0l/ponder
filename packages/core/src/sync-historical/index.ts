@@ -12,6 +12,8 @@ import type {
   Source,
   SyncBlock,
   SyncLog,
+  SyncTrace,
+  SyncTransaction,
   SyncTransactionReceipt,
   TraceFilter,
   TransactionFilter,
@@ -31,7 +33,6 @@ import {
 } from "@/sync/filter.js";
 import { shouldGetTransactionReceipt } from "@/sync/filter.js";
 import { getFragments, recoverFilter } from "@/sync/fragments.js";
-import { dedupe } from "@/utils/dedupe.js";
 import {
   type Interval,
   getChunks,
@@ -543,7 +544,44 @@ export const createHistoricalSync = async (
         }
       }
 
-      // TODO(kyle) query child addresses
+      for (const { filter } of missingIntervals) {
+        switch (filter.type) {
+          case "transaction":
+          case "trace":
+          case "transfer": {
+            if (isAddressFactory(filter.fromAddress)) {
+              childAddresses.set(
+                filter.fromAddress,
+                await args.syncStore.getChildAddresses({
+                  factory: filter.fromAddress,
+                }),
+              );
+            }
+
+            if (isAddressFactory(filter.toAddress)) {
+              childAddresses.set(
+                filter.toAddress,
+                await args.syncStore.getChildAddresses({
+                  factory: filter.toAddress,
+                }),
+              );
+            }
+            break;
+          }
+
+          case "log": {
+            if (isAddressFactory(filter.address)) {
+              childAddresses.set(
+                filter.address,
+                await args.syncStore.getChildAddresses({
+                  factory: filter.address,
+                }),
+              );
+            }
+            break;
+          }
+        }
+      }
 
       const perBlockLogs: Map<number, SyncLog[]> = new Map();
       for (const [, logs] of sync1Result.logs) {
@@ -572,13 +610,15 @@ export const createHistoricalSync = async (
           blockNumber,
         });
 
+        let traces: SyncTrace[] = [];
+        const logs: SyncLog[] = [];
         const requiredTransactions = new Set<Hash>();
         const requiredTransactionReceipts = new Set<Hash>();
 
         if (perBlockLogs.has(blockNumber)) {
-          let logs = perBlockLogs.get(blockNumber)!;
+          let _logs = perBlockLogs.get(blockNumber)!;
 
-          logs = logs.filter((log) => {
+          _logs = _logs.filter((log) => {
             let isMatched = false;
             for (const filter of logFilters) {
               const isAddressMatched = isAddressFactory(filter.address);
@@ -586,16 +626,25 @@ export const createHistoricalSync = async (
                 requiredTransactions.add(log.transactionHash);
                 isMatched = true;
                 if (shouldGetTransactionReceipt(filter)) {
-                  requiredTransactionReceipts.add(log.transactionHash);
+                  if (log.transactionHash === zeroHash) {
+                    args.common.logger.warn({
+                      service: "sync",
+                      msg: `Detected log with empty transaction hash in block ${log.blockHash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
+                    });
+                  } else {
+                    requiredTransactionReceipts.add(log.transactionHash);
+                  }
                 }
               }
             }
             return isMatched;
           });
+
+          logs.push(..._logs);
         }
 
         if (shouldRequestTraces) {
-          let traces = await _debug_traceBlockByNumber(args.requestQueue, {
+          traces = await _debug_traceBlockByNumber(args.requestQueue, {
             blockNumber,
           });
 
@@ -704,10 +753,78 @@ export const createHistoricalSync = async (
           return isMatched;
         });
 
+        // Allow non-matching transactions to be garbage collected
+        block.transactions = transactions;
+
+        // transactions per hash
+        const transactionsByHash = new Map<Hash, SyncTransaction>();
+        for (const transaction of transactions) {
+          transactionsByHash.set(transaction.hash, transaction);
+        }
+
+        // Validate that logs point to the valid transaction hash in the block
+        for (const log of logs) {
+          if (block.hash !== log.blockHash) {
+            throw new Error(
+              `Detected inconsistent RPC responses. 'log.blockHash' ${log.blockHash} does not match 'block.hash' ${block.hash}`,
+            );
+          }
+
+          if (transactionsByHash.get(log.transactionHash) === undefined) {
+            if (log.transactionHash === zeroHash) {
+              args.common.logger.warn({
+                service: "sync",
+                msg: `Detected log with empty transaction hash in block ${block.hash} at log index ${hexToNumber(log.logIndex)}. This is expected for some networks like ZKsync.`,
+              });
+            } else {
+              throw new Error(
+                `Detected inconsistent RPC responses. 'log.transactionHash' ${log.transactionHash} not found in 'block.transactions' ${block.hash}`,
+              );
+            }
+          }
+        }
+
+        for (const trace of traces) {
+          if (transactionsByHash.get(trace.transactionHash) === undefined) {
+            throw new Error(
+              `Detected inconsistent RPC responses. 'trace.transactionHash' ${trace.transactionHash} not found in 'block.transactions' ${block.hash}`,
+            );
+          }
+        }
+
         const transactionReceipts = await syncTransactionReceipts(
           block,
           requiredTransactionReceipts,
         );
+
+        await args.syncStore.insertBlocks({
+          blocks: [block],
+          chainId: args.network.chainId,
+        });
+
+        await args.syncStore.insertTransactions({
+          transactions,
+          chainId: args.network.chainId,
+        });
+
+        await args.syncStore.insertTransactionReceipts({
+          transactionReceipts,
+          chainId: args.network.chainId,
+        });
+
+        await args.syncStore.insertTraces({
+          traces: traces.map((trace) => ({
+            trace,
+            block,
+            transaction: transactionsByHash.get(trace.transactionHash)!,
+          })),
+          chainId: args.network.chainId,
+        });
+
+        await args.syncStore.insertLogs({
+          logs,
+          chainId: args.network.chainId,
+        });
       }
     },
   };
