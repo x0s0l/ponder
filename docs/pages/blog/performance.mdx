@@ -6,15 +6,14 @@ description: "A blog post about performance in Ponder."
 import { Benchmarks } from "@/components/Benchmarks";
 import { Callout } from "nextra/components";
 
-
 # Ponder Performance
 
 Throughout the almost 3 year history of Ponder and especially over the last several months, performance has been a requirement. We're happy to share what makes Ponder fast and what we learned along the way.
 
 ```
-Ponder    █ 41s (95.2x faster)
+Ponder   █ 41s (95.2x faster)
 
-The Graph ██████████████████████████████████████████████████████ 1h 5m 
+TheGraph ████████████████████████████████████████████████████████████████████████ 1h 5m 
 ```
 
 Performance is very important for a framework like Ponder, because it allows developers to rapidly and freely iterate, focusing on their business logic instead of restraints introduced by the tool. Over time, this creates faster feedback loops and better end user expiriences. [give example / talk about where ponder sits in the tech stack]
@@ -29,13 +28,17 @@ To start, a review of the architecture of Ponder. Ponder is an [ETL framework](h
 
 Internally, a Ponder app has two main phases. The **historical backfill** indexes events from the desiginated "start" of the app up to the current point in time. Then, the **realtime** phase indexes newly produced blocks, processing them immediately.
 
-[explain blocking, critical path]
+Ethereum blocks, transactions, traces, logs, and events are grouped into **events**. The simplified goal of any performance work is to increase the number of events processed per second.
 
-## In-memory indexing
+## Performance optimizations
 
-The transform step of involves running user-defined indexing functions, such as the one from our [ERC20 example](https://github.com/ponder-sh/ponder/blob/main/examples/reference-erc20/src/index.ts) below. An indexing function commonly has one or many database function calls for writing application ready data to the database.
+[we did a lot more than this]
 
-Ponder has a [store API](https://ponder.sh/docs/indexing/write-to-the-database#store-api) for simplified database access. If that is too constrained, [raw SQL](https://ponder.sh/docs/indexing/write-to-the-database#raw-sql) is also available.
+### In-memory indexing
+
+The transform step runs user-defined indexing functions, such as the one from our [ERC20 example](https://github.com/ponder-sh/ponder/blob/main/examples/reference-erc20/src/index.ts) below. An indexing function commonly has one or many database function calls for writing application ready data to the database.
+
+Ponder has a [store API](https://ponder.sh/docs/indexing/write-to-the-database#store-api) made up of `find()`, `insert()`, `update()`, and `delete()` for simplified database access. If that is too constrained, [raw SQL](https://ponder.sh/docs/indexing/write-to-the-database#raw-sql) is also available.
 
 ```ts filename="src/index.ts" {6, 16}
 import { ponder } from "ponder:registry";
@@ -63,7 +66,7 @@ ponder.on("ERC20:Approval", async ({ event, context }) => {
 });
 ```
 
-With a naive implementation, each database function call requires 1-2 queries. Database queries take from 1ms to 100ms (because of roundtrip latency), total throughput of Ponder is quickly limited.
+With a naive implementation, each database function call requires 1-2 queries. Database queries can take from 1ms to 100ms (because of roundtrip latency), total throughput of Ponder is quickly limited.
 
 To solve this, we implemented an in-memory caching layer on top of the database. The in-memory cache serves as a buffer for database writes that periodically flushes to the database using the [COPY statement](https://www.postgresql.org/docs/current/sql-copy.html). The in-memory cache also saves results of previous queries for reading data without having to make a database query. 
 
@@ -82,19 +85,34 @@ This was released in [v0.4.37](https://github.com/ponder-sh/ponder/pull/929). Af
 
 As with everything, some tradeoffs had to be made. This design uses way more memory, requiring a memory management solution to avoid out-of-memory errors for large apps. More on this later.
 
-## Delayed errors
+### Delayed errors
 
 Let's take a deep dive into the `db.insert()` function call. When there are no "on conflict" modifiers, this function should throw an error if a row with the same primary key already exists in the database because the primary key imposes a unique constraint. In order to check if row exists or not, Ponder needs to check the previously described in-memory cache or maybe do a database query if the row is not in the cache.
 
-Unfortunately, this is really bad for performance. It is especially bad when you consider that it is almost always wasted work. Only a tiny fraction of apps have a logical error that would cause a unique key constraint.
+Unfortunately, this is really bad for performance. It is especially bad when you consider that this query is almost always wasted work. Only a tiny fraction of apps have a logical error that would cause a unique key constraint.
 
 The solution we came up with is to delay errors until the underlying rows are batched inserted into the database. For each row, we save some metadata [for errors]. If an error occurs when inserting the batch, we use binary search to determine exactly which row violates the unique constraint. With this, errors are slightly delayed but still contain all the information for debugging.
 
 This was released in [v0.9.20](https://github.com/ponder-sh/ponder/pull/1522). The Uniswap v4 app got 10x faster because of this optimization.
 
-<img src="/uniswap.png" className="mt-10" />
+<img src="/uniswap.png" className="mt-6" />
 
-## Speculation
+### Speculation
+
+As previously mentioned, Ponder maintains an in-memory database cache. What happens when the cache gets too large? At first we used a simple LRU algorithm to evict database rows. Because of the inherent randomness of onchain events, [LRU is bad].
+
+Drawing inspiration from [JavaScript engines](https://webkit.org/blog/10308/speculation-in-javascriptcore/), we implemented a speculative cache eviction and pre-fetching algorithm.
+
+The algorithm works as follows:
+1. **Profile**: Profile the database accesses of indexing functions.
+2. **Predict**: Before indexing a new batch of events, use the profiling data to predict which database rows will be accessed.
+3. **Evict and prefetch**: Based on the predictions, evict rows that are no longer needed and prefetch the predicted rows.
+
+This solution is directly applicable to RPC requests made with `context.client` as well. The same profiling, prediction, and prefetching is used to prefetch RPC requests.
+
+This was released in [v0.10.8](https://github.com/ponder-sh/ponder/pull/1596) and [v0.10.15](https://github.com/ponder-sh/ponder/pull/1628). The BasePaint app got 6x faster because of this optimization.
+
+<img src="/basepaint.png" className="mt-6" />
 
 ## What didn't work
 
