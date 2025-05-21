@@ -20,7 +20,7 @@ TheGraph ███████████████████████�
 
 Performance is very important for a framework like Ponder, because it allows developers to rapidly and freely iterate, focusing on their business logic instead of restraints introduced by the tool. Over time, this creates faster feedback loops and better end user expiriences.
 
-Ponder is built with Typescript. This choice is deliberate, but it might be a surprise to some expecting us to _Rewrite-it-in-Rust_. Ponder is proof that thoughtful architecture design allows us to deliver great performance without leaving the comfort of the JavaScript ecosystem.
+Ponder is built with TypeScript. This choice is deliberate, but it might be a surprise to some expecting us to _Rewrite-it-in-Rust_. Ponder is proof that thoughtful architecture design allows us to deliver great performance without leaving the comfort of the JavaScript ecosystem.
 
 We use a combination of unit benchmarks, metrics, and flamegraphs to identify performance bottlenecks and measure the impact of changes.
 
@@ -81,8 +81,8 @@ This was released in [v0.4.37](https://github.com/ponder-sh/ponder/pull/929). Af
 ```
 │ Event          │ Count │ Duration (ms) │
 ├────────────────┼───────┼───────────────┤
-│ ERC20:Transfer │ 13332 │         0.009 │
-│ ERC20:Approval │  4274 │         0.006 │
+│ ERC20:Transfer │ 13332 │         0.008 │
+│ ERC20:Approval │  4274 │         0.005 │
 ```
 
 As with everything, some tradeoffs had to be made. This design uses way more memory, requiring a memory management solution to avoid out-of-memory errors for large apps. More on this later.
