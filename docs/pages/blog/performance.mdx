@@ -8,17 +8,19 @@ import { Callout } from "nextra/components";
 
 # Ponder Performance
 
-Throughout the almost 3 year history of Ponder and especially over the last several months, performance has been a requirement. We're happy to share what makes Ponder fast and what we learned along the way.
+Delivering peak performance has been a driving principle for Ponder throughout its almost three-year history, and the central theme of our focused work in recent months. We're happy to share what makes Ponder fast and what we learned along the way.
 
 ```
 Ponder   █ 41s (95.2x faster)
 
 TheGraph ████████████████████████████████████████████████████████████████████████ 1h 5m 
 ```
+> This is a benchmark of the `reference-erc20` app running from blocks 13000000 to 20000000 on an M4 Macbook Air.
+> TheGraph is a popular and original indexing framework for Ethereum. 
 
-Performance is very important for a framework like Ponder, because it allows developers to rapidly and freely iterate, focusing on their business logic instead of restraints introduced by the tool. Over time, this creates faster feedback loops and better end user expiriences. [give example / talk about where ponder sits in the tech stack]
+Performance is very important for a framework like Ponder, because it allows developers to rapidly and freely iterate, focusing on their business logic instead of restraints introduced by the tool. Over time, this creates faster feedback loops and better end user expiriences.
 
-Ponder is built with Typescript. [mention rust]
+Ponder is built with Typescript. This choice is deliberate, but it might be a surprise to some expecting us to _Rewrite-it-in-Rust_. Ponder is proof that thoughtful architecture design allows us to deliver great performance without leaving the comfort of the JavaScript ecosystem.
 
 We use a combination of unit benchmarks, metrics, and flamegraphs to identify performance bottlenecks and measure the impact of changes.
 
@@ -28,11 +30,11 @@ To start, a review of the architecture of Ponder. Ponder is an [ETL framework](h
 
 Internally, a Ponder app has two main phases. The **historical backfill** indexes events from the desiginated "start" of the app up to the current point in time. Then, the **realtime** phase indexes newly produced blocks, processing them immediately.
 
-Ethereum blocks, transactions, traces, logs, and events are grouped into **events**. The simplified goal of any performance work is to increase the number of events processed per second.
+Ethereum blocks, transactions, traces, logs, and events logically grouped together are collectively referred to as **events**. The simplified goal of any performance work is to increase the number of events processed per second across a diverse range of user workloads.
 
 ## Performance optimizations
 
-[we did a lot more than this]
+The following examples highlight key optimizations, particularly within our data 'transform' step, but they're just a part of our overall performance work. The key bottlenecks in this step are 1) database queries, when user logic requires reading data that's already been inserted and 2) RPC requests.
 
 ### In-memory indexing
 
@@ -71,7 +73,7 @@ With a naive implementation, each database function call requires 1-2 queries. D
 To solve this, we implemented an in-memory caching layer on top of the database. The in-memory cache serves as a buffer for database writes that periodically flushes to the database using the [COPY statement](https://www.postgresql.org/docs/current/sql-copy.html). The in-memory cache also saves results of previous queries for reading data without having to make a database query. 
 
 <Callout type="info"> 
- [key-value], a more expressive syntax such as raw SQL is unable to benefit from the optimization described here.
+  The key-value design of the store API is a requirement. A more expressive syntax such as raw SQL is unable to benefit from the optimization described here.
 </Callout>
 
 This was released in [v0.4.37](https://github.com/ponder-sh/ponder/pull/929). After this change, database function calls with a proper cache hit take single digit microseconds.
@@ -91,7 +93,7 @@ Let's take a deep dive into the `db.insert()` function call. When there are no "
 
 Unfortunately, this is really bad for performance. It is especially bad when you consider that this query is almost always wasted work. Only a tiny fraction of apps have a logical error that would cause a unique key constraint.
 
-The solution we came up with is to delay errors until the underlying rows are batched inserted into the database. For each row, we save some metadata [for errors]. If an error occurs when inserting the batch, we use binary search to determine exactly which row violates the unique constraint. With this, errors are slightly delayed but still contain all the information for debugging.
+The solution we came up with is to delay errors until the underlying rows are batched inserted into the database. If an error occurs when inserting the batch, we use binary search to determine exactly which row violates the unique constraint. With this, errors are slightly delayed but still contain all the information for debugging.
 
 This was released in [v0.9.20](https://github.com/ponder-sh/ponder/pull/1522). The Uniswap v4 app got 10x faster because of this optimization.
 
@@ -99,7 +101,7 @@ This was released in [v0.9.20](https://github.com/ponder-sh/ponder/pull/1522). T
 
 ### Speculation
 
-As previously mentioned, Ponder maintains an in-memory database cache. What happens when the cache gets too large? At first we used a simple LRU algorithm to evict database rows. Because of the inherent randomness of onchain events, [LRU is bad].
+As previously mentioned, Ponder maintains an in-memory database cache. What happens when the cache gets too large? At first we used a simple LRU algorithm to evict database rows. Because of the inherent randomness of onchain events, a simple LRU algorithm is suboptimal and leads to a low cache hit rate.
 
 Drawing inspiration from [JavaScript engines](https://webkit.org/blog/10308/speculation-in-javascriptcore/), we implemented a speculative cache eviction and pre-fetching algorithm.
 
@@ -110,7 +112,7 @@ The algorithm works as follows:
 
 This solution is directly applicable to RPC requests made with `context.client` as well. The same profiling, prediction, and prefetching is used to prefetch RPC requests.
 
-This was released in [v0.10.8](https://github.com/ponder-sh/ponder/pull/1596) and [v0.10.15](https://github.com/ponder-sh/ponder/pull/1628). The BasePaint app got 6x faster because of this optimization.
+This was released in [v0.10.8](https://github.com/ponder-sh/ponder/pull/1596) and [v0.10.15](https://github.com/ponder-sh/ponder/pull/1628). The BasePaint app got 6x faster and acheived a 100% cache hit rate because of this optimization.
 
 <img src="/basepaint.png" className="mt-6" />
 
