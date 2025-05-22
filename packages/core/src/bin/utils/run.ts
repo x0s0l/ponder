@@ -176,6 +176,8 @@ export async function run({
     db: database.qb.drizzle,
   });
 
+  await database.createIndexes();
+
   // Run historical indexing until complete.
   for await (const events of recordAsyncGenerator(
     sync.getEvents(),
@@ -592,7 +594,6 @@ export async function run({
     });
   }
 
-  await database.createIndexes();
   await database.createTriggers();
 
   await sync.startRealtime();
