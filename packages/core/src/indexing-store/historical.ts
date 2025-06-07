@@ -3,6 +3,7 @@ import type { Common } from "@/internal/common.js";
 import { RecordNotFoundError } from "@/internal/errors.js";
 import type { Schema, SchemaBuild } from "@/internal/types.js";
 import type { Drizzle } from "@/types/db.js";
+import { lazyCopy } from "@/utils/lazy.js";
 import { prettyPrint } from "@/utils/print.js";
 import { startClock } from "@/utils/timer.js";
 import type { PGlite } from "@electric-sql/pglite";
@@ -38,7 +39,9 @@ export const createHistoricalIndexingStore = ({
         method: "find",
       });
       checkOnchainTable(table, "find");
-      return indexingCache.get({ table, key, db });
+      return indexingCache
+        .get({ table, key, db })
+        .then((row) => (row === null ? null : lazyCopy(row)));
     },
 
     // @ts-ignore
@@ -67,12 +70,14 @@ export const createHistoricalIndexingStore = ({
                     rows.push(null);
                   } else {
                     rows.push(
-                      indexingCache.set({
-                        table,
-                        key: value,
-                        row: value,
-                        isUpdate: false,
-                      }),
+                      lazyCopy(
+                        indexingCache.set({
+                          table,
+                          key: value,
+                          row: value,
+                          isUpdate: false,
+                        }),
+                      ),
                     );
                   }
                 }
@@ -88,12 +93,14 @@ export const createHistoricalIndexingStore = ({
                   return null;
                 }
 
-                return indexingCache.set({
-                  table,
-                  key: values,
-                  row: values,
-                  isUpdate: false,
-                });
+                return lazyCopy(
+                  indexingCache.set({
+                    table,
+                    key: values,
+                    row: values,
+                    isUpdate: false,
+                  }),
+                );
               }
             },
             onConflictDoUpdate: async (valuesU: any) => {
@@ -127,21 +134,25 @@ export const createHistoricalIndexingStore = ({
                       }
                     }
                     rows.push(
-                      indexingCache.set({
-                        table,
-                        key: value,
-                        row,
-                        isUpdate: true,
-                      }),
+                      lazyCopy(
+                        indexingCache.set({
+                          table,
+                          key: value,
+                          row,
+                          isUpdate: true,
+                        }),
+                      ),
                     );
                   } else {
                     rows.push(
-                      indexingCache.set({
-                        table,
-                        key: value,
-                        row: value,
-                        isUpdate: false,
-                      }),
+                      lazyCopy(
+                        indexingCache.set({
+                          table,
+                          key: value,
+                          row: value,
+                          isUpdate: false,
+                        }),
+                      ),
                     );
                   }
                 }
@@ -163,20 +174,24 @@ export const createHistoricalIndexingStore = ({
                       row[key] = value;
                     }
                   }
-                  return indexingCache.set({
-                    table,
-                    key: values,
-                    row,
-                    isUpdate: true,
-                  });
+                  return lazyCopy(
+                    indexingCache.set({
+                      table,
+                      key: values,
+                      row,
+                      isUpdate: true,
+                    }),
+                  );
                 }
 
-                return indexingCache.set({
-                  table,
-                  key: values,
-                  row: values,
-                  isUpdate: false,
-                });
+                return lazyCopy(
+                  indexingCache.set({
+                    table,
+                    key: values,
+                    row: values,
+                    isUpdate: false,
+                  }),
+                );
               }
             },
             // biome-ignore lint/suspicious/noThenProperty: <explanation>
@@ -194,12 +209,14 @@ export const createHistoricalIndexingStore = ({
                   // because error is recovered at flush time
 
                   rows.push(
-                    indexingCache.set({
-                      table,
-                      key: value,
-                      row: value,
-                      isUpdate: false,
-                    }),
+                    lazyCopy(
+                      indexingCache.set({
+                        table,
+                        key: value,
+                        row: value,
+                        isUpdate: false,
+                      }),
+                    ),
                   );
                 }
                 return Promise.resolve(rows).then(onFulfilled, onRejected);
@@ -213,7 +230,10 @@ export const createHistoricalIndexingStore = ({
                   row: values,
                   isUpdate: false,
                 });
-                return Promise.resolve(result).then(onFulfilled, onRejected);
+                return Promise.resolve(lazyCopy(result)).then(
+                  onFulfilled,
+                  onRejected,
+                );
               }
             },
             catch: (onRejected) => inner.then(undefined, onRejected),
@@ -269,7 +289,9 @@ export const createHistoricalIndexingStore = ({
             }
           }
 
-          return indexingCache.set({ table, key, row, isUpdate: true });
+          return lazyCopy(
+            indexingCache.set({ table, key, row, isUpdate: true }),
+          );
         },
       };
     },

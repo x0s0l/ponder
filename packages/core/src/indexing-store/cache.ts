@@ -52,7 +52,7 @@ export type IndexingCache = {
     table: Table;
     key: object;
     db: Drizzle<Schema>;
-  }) => Row | null | Promise<Row | null>;
+  }) => Promise<Row | null>;
   /**
    * Sets the entry for `table` with `key` to `row`.
    */
@@ -379,7 +379,7 @@ export const createIndexingCache = ({
           table: getTableName(table),
           type: isCacheComplete ? "complete" : "hit",
         });
-        return structuredClone(bufferEntry.row);
+        return bufferEntry.row;
       }
 
       const entry = cache.get(table)!.get(ck);
@@ -389,7 +389,7 @@ export const createIndexingCache = ({
           table: getTableName(table),
           type: isCacheComplete ? "complete" : "hit",
         });
-        return structuredClone(entry);
+        return entry;
       }
 
       if (isCacheComplete) {
@@ -415,12 +415,12 @@ export const createIndexingCache = ({
         .where(getWhereCondition(table, key))
         .then((res) => (res.length === 0 ? null : res[0]!))
         .then((row) => {
-          cache.get(table)!.set(ck, structuredClone(row));
+          cache.get(table)!.set(ck, row);
 
           // Note: the size is not recorded because it is not possible
           // to miss the cache when in the "full in-memory" mode
 
-          return row;
+          return row === null ? null : row;
         });
 
       common.metrics.ponder_indexing_cache_query_duration.observe(
@@ -437,15 +437,9 @@ export const createIndexingCache = ({
       const ck = getCacheKey(table, key, primaryKeyCache);
 
       if (isUpdate) {
-        updateBuffer.get(table)!.set(ck, {
-          row: structuredClone(row),
-          metadata: { event },
-        });
+        updateBuffer.get(table)!.set(ck, { row, metadata: { event } });
       } else {
-        insertBuffer.get(table)!.set(ck, {
-          row: structuredClone(row),
-          metadata: { event },
-        });
+        insertBuffer.get(table)!.set(ck, { row, metadata: { event } });
       }
 
       return row;
