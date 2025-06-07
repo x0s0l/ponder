@@ -49,7 +49,9 @@ export const lazyCopy = <T extends object>(row: T): T => {
   let copied: T | undefined;
   const proxy = new Proxy(row, {
     get(target, prop) {
-      if (prop === "then") return Reflect.get(target, prop);
+      if (prop === "then" || prop === "catch" || prop === "finally") {
+        return Reflect.get(target, prop);
+      }
       if (copied === undefined) copied = structuredClone(row);
       return Reflect.get(copied, prop);
     },
