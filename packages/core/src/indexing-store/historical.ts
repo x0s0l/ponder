@@ -70,37 +70,29 @@ export const createHistoricalIndexingStore = ({
                     rows.push(null);
                   } else {
                     rows.push(
-                      lazyCopy(
-                        indexingCache.set({
-                          table,
-                          key: value,
-                          row: value,
-                          isUpdate: false,
-                        }),
-                      ),
+                      indexingCache.set({
+                        table,
+                        key: value,
+                        row: value,
+                        isUpdate: false,
+                      }),
                     );
                   }
                 }
                 return rows;
               } else {
-                const row = await indexingCache.get({
-                  table,
-                  key: values,
-                  db,
-                });
+                const row = await indexingCache.get({ table, key: values, db });
 
                 if (row) {
                   return null;
                 }
 
-                return lazyCopy(
-                  indexingCache.set({
-                    table,
-                    key: values,
-                    row: values,
-                    isUpdate: false,
-                  }),
-                );
+                return indexingCache.set({
+                  table,
+                  key: values,
+                  row: values,
+                  isUpdate: false,
+                });
               }
             },
             onConflictDoUpdate: async (valuesU: any) => {
@@ -134,25 +126,21 @@ export const createHistoricalIndexingStore = ({
                       }
                     }
                     rows.push(
-                      lazyCopy(
-                        indexingCache.set({
-                          table,
-                          key: value,
-                          row,
-                          isUpdate: true,
-                        }),
-                      ),
+                      indexingCache.set({
+                        table,
+                        key: value,
+                        row,
+                        isUpdate: true,
+                      }),
                     );
                   } else {
                     rows.push(
-                      lazyCopy(
-                        indexingCache.set({
-                          table,
-                          key: value,
-                          row: value,
-                          isUpdate: false,
-                        }),
-                      ),
+                      indexingCache.set({
+                        table,
+                        key: value,
+                        row: value,
+                        isUpdate: false,
+                      }),
                     );
                   }
                 }
@@ -174,24 +162,20 @@ export const createHistoricalIndexingStore = ({
                       row[key] = value;
                     }
                   }
-                  return lazyCopy(
-                    indexingCache.set({
-                      table,
-                      key: values,
-                      row,
-                      isUpdate: true,
-                    }),
-                  );
-                }
-
-                return lazyCopy(
-                  indexingCache.set({
+                  return indexingCache.set({
                     table,
                     key: values,
-                    row: values,
-                    isUpdate: false,
-                  }),
-                );
+                    row,
+                    isUpdate: true,
+                  });
+                }
+
+                return indexingCache.set({
+                  table,
+                  key: values,
+                  row: values,
+                  isUpdate: false,
+                });
               }
             },
             // biome-ignore lint/suspicious/noThenProperty: <explanation>
@@ -209,14 +193,12 @@ export const createHistoricalIndexingStore = ({
                   // because error is recovered at flush time
 
                   rows.push(
-                    lazyCopy(
-                      indexingCache.set({
-                        table,
-                        key: value,
-                        row: value,
-                        isUpdate: false,
-                      }),
-                    ),
+                    indexingCache.set({
+                      table,
+                      key: value,
+                      row: value,
+                      isUpdate: false,
+                    }),
                   );
                 }
                 return Promise.resolve(rows).then(onFulfilled, onRejected);
@@ -230,10 +212,7 @@ export const createHistoricalIndexingStore = ({
                   row: values,
                   isUpdate: false,
                 });
-                return Promise.resolve(lazyCopy(result)).then(
-                  onFulfilled,
-                  onRejected,
-                );
+                return Promise.resolve(result).then(onFulfilled, onRejected);
               }
             },
             catch: (onRejected) => inner.then(undefined, onRejected),
@@ -289,9 +268,7 @@ export const createHistoricalIndexingStore = ({
             }
           }
 
-          return lazyCopy(
-            indexingCache.set({ table, key, row, isUpdate: true }),
-          );
+          return indexingCache.set({ table, key, row, isUpdate: true });
         },
       };
     },

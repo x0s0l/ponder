@@ -13,6 +13,7 @@ import type {
 } from "@/internal/types.js";
 import type { Drizzle } from "@/types/db.js";
 import { dedupe } from "@/utils/dedupe.js";
+import { lazyCopy } from "@/utils/lazy.js";
 import { prettyPrint } from "@/utils/print.js";
 import { startClock } from "@/utils/timer.js";
 import { PGlite } from "@electric-sql/pglite";
@@ -437,12 +438,20 @@ export const createIndexingCache = ({
       const ck = getCacheKey(table, key, primaryKeyCache);
 
       if (isUpdate) {
-        updateBuffer.get(table)!.set(ck, { row, metadata: { event } });
+        // Note: We need a more advanced proxy, that copies the original row
+        // when it gets mutated. This might be impossible.
+        updateBuffer.get(table)!.set(ck, {
+          row: structuredClone(row),
+          metadata: { event },
+        });
       } else {
-        insertBuffer.get(table)!.set(ck, { row, metadata: { event } });
+        insertBuffer.get(table)!.set(ck, {
+          row: structuredClone(row),
+          metadata: { event },
+        });
       }
 
-      return row;
+      return lazyCopy(row);
     },
     async delete({ table, key, db }) {
       const ck = getCacheKey(table, key);
