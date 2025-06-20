@@ -908,6 +908,8 @@ export const createRealtimeSync = (
             ),
           );
 
+          await new Promise(setImmediate);
+
           args.common.logger.info({
             service: "realtime",
             msg: `Fetched ${missingBlockRange.length} missing '${
