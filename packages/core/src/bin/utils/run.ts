@@ -71,7 +71,7 @@ export async function run({
 
   runCodegen({ common });
 
-  const syncStore = createSyncStore({ common, database });
+  const syncStore = createSyncStore({ common, qb: database.syncQB });
 
   const sync = await createSync({
     common,

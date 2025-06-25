@@ -1,3 +1,4 @@
+import type { QB } from "@/database/queryBuilder.js";
 import type { Common } from "@/internal/common.js";
 import { ShutdownError } from "@/internal/errors.js";
 import type {
@@ -20,7 +21,8 @@ import type {
   TransferFilter,
 } from "@/internal/types.js";
 import type { Rpc } from "@/rpc/index.js";
-import type { SyncStore } from "@/sync-store/index.js";
+import { type SyncStore, createSyncStore } from "@/sync-store/index.js";
+import type * as PONDER_SYNC from "@/sync-store/schema.js";
 import {
   getChildAddress,
   isAddressFactory,
@@ -32,7 +34,7 @@ import {
   isTransferFilterMatched,
 } from "@/sync/filter.js";
 import { shouldGetTransactionReceipt } from "@/sync/filter.js";
-import { getFragments, recoverFilter } from "@/sync/fragments.js";
+import { recoverFilter } from "@/sync/fragments.js";
 import {
   type Interval,
   getChunks,
@@ -64,11 +66,13 @@ import {
 } from "viem";
 
 export type HistoricalSync = {
-  intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
   calculateMissingIntervals(params: {
     interval: Interval;
   }): IntervalWithFilter[];
-  sync1(params: { missingIntervals: IntervalWithFilter[] }): Promise<
+  sync1(params: {
+    qb: QB<typeof PONDER_SYNC>;
+    missingIntervals: IntervalWithFilter[];
+  }): Promise<
     Map<
       number,
       {
@@ -78,6 +82,7 @@ export type HistoricalSync = {
     >
   >;
   sync2(params: {
+    qb: QB<typeof PONDER_SYNC>;
     interval: Interval;
     missingIntervals: IntervalWithFilter[];
     sync1Result: Map<
@@ -98,9 +103,9 @@ type IntervalWithFilter = {
 type CreateHistoricalSyncParameters = {
   common: Common;
   sources: Source[];
-  syncStore: SyncStore;
   chain: Chain;
   rpc: Rpc;
+  intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
   onFatalError: (error: Error) => void;
 };
 
@@ -124,28 +129,6 @@ export const createHistoricalSync = async (
   } = {
     estimatedRange: 500,
   };
-  /**
-   * Intervals that have been completed for all filters in `args.sources`.
-   *
-   * Note: `intervalsCache` is not updated after a new interval is synced.
-   */
-  let intervalsCache: Map<
-    Filter,
-    { fragment: Fragment; intervals: Interval[] }[]
-  >;
-  if (args.chain.disableCache) {
-    intervalsCache = new Map();
-    for (const { filter } of args.sources) {
-      intervalsCache.set(filter, []);
-      for (const { fragment } of getFragments(filter)) {
-        intervalsCache.get(filter)!.push({ fragment, intervals: [] });
-      }
-    }
-  } else {
-    intervalsCache = await args.syncStore.getIntervals({
-      filters: args.sources.map(({ filter }) => filter),
-    });
-  }
 
   ////////
   // Helper functions for sync tasks
@@ -336,7 +319,11 @@ export const createHistoricalSync = async (
   };
 
   /** Extract and insert the log-based addresses that match `filter` + `interval`. */
-  const syncLogFactory = async (factory: LogFactory, interval: Interval) => {
+  const syncLogFactory = async (
+    factory: LogFactory,
+    interval: Interval,
+    syncStore: SyncStore,
+  ) => {
     const logs = await syncLogsDynamic({
       filter: factory,
       interval,
@@ -355,7 +342,7 @@ export const createHistoricalSync = async (
 
     // Note: `factory` must refer to the same original `factory` in `filter`
     // and not be a recovered factory from `recoverFilter`.
-    await args.syncStore.insertChildAddresses({
+    await syncStore.insertChildAddresses({
       factory,
       childAddresses,
       chainId: args.chain.id,
@@ -369,6 +356,7 @@ export const createHistoricalSync = async (
   const syncAddressFactory = async (
     factory: Factory,
     interval: Interval,
+    syncStore: SyncStore,
   ): Promise<Map<Address, number>> => {
     const factoryInterval: Interval = [
       Math.max(factory.fromBlock ?? 0, interval[0]),
@@ -376,12 +364,12 @@ export const createHistoricalSync = async (
     ];
 
     if (factoryInterval[0] <= factoryInterval[1]) {
-      await syncLogFactory(factory, factoryInterval);
+      await syncLogFactory(factory, factoryInterval, syncStore);
     }
 
     // Note: `factory` must refer to the same original `factory` in `filter`
     // and not be a recovered factory from `recoverFilter`.
-    return args.syncStore.getChildAddresses({ factory });
+    return syncStore.getChildAddresses({ factory });
   };
 
   ////////
@@ -389,7 +377,6 @@ export const createHistoricalSync = async (
   ////////
 
   return {
-    intervalsCache,
     calculateMissingIntervals({ interval }) {
       const intervalsToSync: {
         interval: Interval;
@@ -454,7 +441,7 @@ export const createHistoricalSync = async (
 
         filterIntervals = intervalUnion(filterIntervals);
 
-        const completedIntervals = intervalsCache.get(filter)!;
+        const completedIntervals = args.intervalsCache.get(filter)!;
         const requiredIntervals: {
           fragment: Fragment;
           intervals: Interval[];
@@ -496,7 +483,8 @@ export const createHistoricalSync = async (
 
       return intervalsToSync;
     },
-    async sync1({ missingIntervals }) {
+    async sync1({ qb, missingIntervals }) {
+      const syncStore = createSyncStore({ common: args.common, qb });
       const result = new Map<
         number,
         {
@@ -516,6 +504,7 @@ export const createHistoricalSync = async (
                   const childAddresses = await syncAddressFactory(
                     filter.address,
                     interval,
+                    syncStore,
                   );
 
                   // Note: Exit early when only the factory needs to be synced
@@ -588,7 +577,7 @@ export const createHistoricalSync = async (
                   }
                 }
 
-                await args.syncStore.insertLogs({
+                await syncStore.insertLogs({
                   logs,
                   chainId: args.chain.id,
                 });
@@ -600,10 +589,14 @@ export const createHistoricalSync = async (
               case "transfer": {
                 await Promise.all([
                   isAddressFactory(filter.fromAddress)
-                    ? syncAddressFactory(filter.fromAddress, interval)
+                    ? syncAddressFactory(
+                        filter.fromAddress,
+                        interval,
+                        syncStore,
+                      )
                     : Promise.resolve(),
                   isAddressFactory(filter.toAddress)
-                    ? syncAddressFactory(filter.toAddress, interval)
+                    ? syncAddressFactory(filter.toAddress, interval, syncStore)
                     : Promise.resolve(),
                 ]);
 
@@ -632,7 +625,8 @@ export const createHistoricalSync = async (
 
       return result;
     },
-    async sync2({ interval, missingIntervals, sync1Result }) {
+    async sync2({ qb, interval, missingIntervals, sync1Result }) {
+      const syncStore = createSyncStore({ common: args.common, qb });
       const blockFilters: BlockFilter[] = [];
       const transactionFilters: TransactionFilter[] = [];
       const traceFilters: TraceFilter[] = [];
@@ -683,7 +677,7 @@ export const createHistoricalSync = async (
             if (isAddressFactory(filter.fromAddress)) {
               childAddresses.set(
                 filter.fromAddress,
-                await args.syncStore.getChildAddresses({
+                await syncStore.getChildAddresses({
                   factory: filter.fromAddress,
                 }),
               );
@@ -692,7 +686,7 @@ export const createHistoricalSync = async (
             if (isAddressFactory(filter.toAddress)) {
               childAddresses.set(
                 filter.toAddress,
-                await args.syncStore.getChildAddresses({
+                await syncStore.getChildAddresses({
                   factory: filter.toAddress,
                 }),
               );
@@ -704,7 +698,7 @@ export const createHistoricalSync = async (
             if (isAddressFactory(filter.address)) {
               childAddresses.set(
                 filter.address,
-                await args.syncStore.getChildAddresses({
+                await syncStore.getChildAddresses({
                   factory: filter.address,
                 }),
               );
@@ -875,22 +869,22 @@ export const createHistoricalSync = async (
           transactionsByHash.set(transaction.hash, transaction);
         }
 
-        await args.syncStore.insertBlocks({
+        await syncStore.insertBlocks({
           blocks: [block],
           chainId: args.chain.id,
         });
 
-        await args.syncStore.insertTransactions({
+        await syncStore.insertTransactions({
           transactions,
           chainId: args.chain.id,
         });
 
-        await args.syncStore.insertTransactionReceipts({
+        await syncStore.insertTransactionReceipts({
           transactionReceipts,
           chainId: args.chain.id,
         });
 
-        await args.syncStore.insertTraces({
+        await syncStore.insertTraces({
           traces: traces.map((trace) => ({
             trace,
             block: block!,
@@ -909,7 +903,7 @@ export const createHistoricalSync = async (
 
       await Promise.all(intervalRange(interval).map(queue.add));
 
-      await args.syncStore.insertIntervals({
+      await syncStore.insertIntervals({
         intervals: missingIntervals,
         chainId: args.chain.id,
       });

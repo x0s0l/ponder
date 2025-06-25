@@ -5,6 +5,7 @@ import type {
   Event,
   Factory,
   Filter,
+  Fragment,
   IndexingBuild,
   LightBlock,
   RawEvent,
@@ -67,6 +68,7 @@ import {
   syncTransactionToInternal,
 } from "./events.js";
 import { isAddressFactory } from "./filter.js";
+import { getFragments } from "./fragments.js";
 
 export type Sync = {
   getEvents(): EventGenerator;
@@ -253,6 +255,10 @@ export const createSync = async (params: {
     Chain,
     {
       syncProgress: SyncProgress;
+      intervalsCache: Map<
+        Filter,
+        { fragment: Fragment; intervals: Interval[] }[]
+      >;
       historicalSync: HistoricalSync;
       realtimeSync: RealtimeSync | undefined;
     }
@@ -327,7 +333,7 @@ export const createSync = async (params: {
 
     const eventGenerators = await Promise.all(
       Array.from(perChainSync.entries()).map(
-        async ([chain, { syncProgress, historicalSync }]) => {
+        async ([chain, { syncProgress, intervalsCache, historicalSync }]) => {
           const sources = params.indexingBuild.sources.filter(
             ({ filter }) => filter.chainId === chain.id,
           );
@@ -418,6 +424,7 @@ export const createSync = async (params: {
             chain,
             syncProgress,
             historicalSync,
+            intervalsCache,
           });
 
           // In order to speed up the "extract" phase when there is a crash recovery,
@@ -809,12 +816,35 @@ export const createSync = async (params: {
         });
       }
 
+      /**
+       * Intervals that have been completed for all filters in `sources`.
+       *
+       * Note: `intervalsCache` is not updated after a new interval is synced.
+       */
+      let intervalsCache: Map<
+        Filter,
+        { fragment: Fragment; intervals: Interval[] }[]
+      >;
+      if (chain.disableCache) {
+        intervalsCache = new Map();
+        for (const { filter } of sources) {
+          intervalsCache.set(filter, []);
+          for (const { fragment } of getFragments(filter)) {
+            intervalsCache.get(filter)!.push({ fragment, intervals: [] });
+          }
+        }
+      } else {
+        intervalsCache = await params.syncStore.getIntervals({
+          filters: sources.map(({ filter }) => filter),
+        });
+      }
+
       const historicalSync = await createHistoricalSync({
         common: params.common,
         sources,
-        syncStore: params.syncStore,
         rpc,
         chain,
+        intervalsCache,
         onFatalError: params.onFatalError,
       });
 
@@ -824,7 +854,7 @@ export const createSync = async (params: {
         sources,
         rpc,
         finalizedBlock,
-        intervalsCache: historicalSync.intervalsCache,
+        intervalsCache,
       });
 
       params.common.metrics.ponder_sync_is_realtime.set(
@@ -840,6 +870,7 @@ export const createSync = async (params: {
         syncProgress,
         historicalSync,
         realtimeSync: undefined,
+        intervalsCache,
       });
     }),
   );
@@ -1357,11 +1388,13 @@ export async function* getLocalSyncGenerator({
   chain,
   syncProgress,
   historicalSync,
+  intervalsCache,
 }: {
   common: Common;
   chain: Chain;
   syncProgress: SyncProgress;
   historicalSync: HistoricalSync;
+  intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
 }): AsyncGenerator<number> {
   const label = { chain: chain.name };
 
@@ -1407,59 +1440,62 @@ export async function* getLocalSyncGenerator({
     msg: `Initialized '${chain.name}' historical sync for block range [${totalInterval[0]}, ${totalInterval[1]}]`,
   });
 
-  const requiredIntervals = Array.from(
-    historicalSync.intervalsCache.entries(),
-  ).flatMap(([filter, fragmentIntervals]) => {
-    const filterIntervals: Interval[] = [
-      [
-        filter.fromBlock ?? 0,
-        Math.min(filter.toBlock ?? Number.POSITIVE_INFINITY, totalInterval[1]),
-      ],
-    ];
+  const requiredIntervals = Array.from(intervalsCache.entries()).flatMap(
+    ([filter, fragmentIntervals]) => {
+      const filterIntervals: Interval[] = [
+        [
+          filter.fromBlock ?? 0,
+          Math.min(
+            filter.toBlock ?? Number.POSITIVE_INFINITY,
+            totalInterval[1],
+          ),
+        ],
+      ];
 
-    switch (filter.type) {
-      case "log":
-        if (isAddressFactory(filter.address)) {
-          filterIntervals.push([
-            filter.address.fromBlock ?? 0,
-            Math.min(
-              filter.address.toBlock ?? Number.POSITIVE_INFINITY,
-              totalInterval[1],
-            ),
-          ]);
-        }
-        break;
-      case "trace":
-      case "transaction":
-      case "transfer":
-        if (isAddressFactory(filter.fromAddress)) {
-          filterIntervals.push([
-            filter.fromAddress.fromBlock ?? 0,
-            Math.min(
-              filter.fromAddress.toBlock ?? Number.POSITIVE_INFINITY,
-              totalInterval[1],
-            ),
-          ]);
-        }
+      switch (filter.type) {
+        case "log":
+          if (isAddressFactory(filter.address)) {
+            filterIntervals.push([
+              filter.address.fromBlock ?? 0,
+              Math.min(
+                filter.address.toBlock ?? Number.POSITIVE_INFINITY,
+                totalInterval[1],
+              ),
+            ]);
+          }
+          break;
+        case "trace":
+        case "transaction":
+        case "transfer":
+          if (isAddressFactory(filter.fromAddress)) {
+            filterIntervals.push([
+              filter.fromAddress.fromBlock ?? 0,
+              Math.min(
+                filter.fromAddress.toBlock ?? Number.POSITIVE_INFINITY,
+                totalInterval[1],
+              ),
+            ]);
+          }
 
-        if (isAddressFactory(filter.toAddress)) {
-          filterIntervals.push([
-            filter.toAddress.fromBlock ?? 0,
-            Math.min(
-              filter.toAddress.toBlock ?? Number.POSITIVE_INFINITY,
-              totalInterval[1],
-            ),
-          ]);
-        }
-    }
+          if (isAddressFactory(filter.toAddress)) {
+            filterIntervals.push([
+              filter.toAddress.fromBlock ?? 0,
+              Math.min(
+                filter.toAddress.toBlock ?? Number.POSITIVE_INFINITY,
+                totalInterval[1],
+              ),
+            ]);
+          }
+      }
 
-    return intervalDifference(
-      intervalUnion(filterIntervals),
-      intervalIntersectionMany(
-        fragmentIntervals.map(({ intervals }) => intervals),
-      ),
-    );
-  });
+      return intervalDifference(
+        intervalUnion(filterIntervals),
+        intervalIntersectionMany(
+          fragmentIntervals.map(({ intervals }) => intervals),
+        ),
+      );
+    },
+  );
 
   const required = intervalSum(intervalUnion(requiredIntervals));
   const total = totalInterval[1] - totalInterval[0] + 1;
@@ -1515,6 +1551,7 @@ export async function* getLocalSyncGenerator({
     const missingIntervals = historicalSync.calculateMissingIntervals({
       interval,
     });
+
     const sync1Result = await historicalSync.sync1({ missingIntervals });
     await historicalSync.sync2({
       interval,
@@ -1586,7 +1623,7 @@ export const getLocalSyncProgress = async ({
   chain: Chain;
   rpc: Rpc;
   finalizedBlock: LightBlock;
-  intervalsCache: HistoricalSync["intervalsCache"];
+  intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
 }): Promise<SyncProgress> => {
   const syncProgress = {} as SyncProgress;
   const filters = sources.map(({ filter }) => filter);
@@ -1675,7 +1712,7 @@ export const getCachedBlock = ({
   intervalsCache,
 }: {
   filters: Filter[];
-  intervalsCache: HistoricalSync["intervalsCache"];
+  intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
 }): number | undefined => {
   const latestCompletedBlocks = filters.map((filter) => {
     const requiredInterval = [
