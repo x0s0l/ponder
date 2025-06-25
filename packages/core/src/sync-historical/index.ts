@@ -41,6 +41,7 @@ import {
   intervalRange,
   intervalUnion,
 } from "@/utils/interval.js";
+import { createQueue } from "@/utils/queue.js";
 import {
   _debug_traceBlockByNumber,
   _eth_getBlockByNumber,
@@ -713,7 +714,7 @@ export const createHistoricalSync = async (
         }
       }
 
-      for (const blockNumber of intervalRange(interval)) {
+      const syncBlock = async (blockNumber: number) => {
         let block: SyncBlock | undefined;
 
         let requiredTransactions = new Set<Hash>();
@@ -840,7 +841,7 @@ export const createHistoricalSync = async (
         ////////
 
         if (block === undefined && transactionFilters.length === 0) {
-          continue;
+          return;
         }
 
         if (block === undefined) {
@@ -897,7 +898,16 @@ export const createHistoricalSync = async (
           })),
           chainId: args.chain.id,
         });
-      }
+      };
+
+      const queue = createQueue({
+        browser: false,
+        concurrency: 50,
+        initialStart: true,
+        worker: syncBlock,
+      });
+
+      await Promise.all(intervalRange(interval).map(queue.add));
 
       await args.syncStore.insertIntervals({
         intervals: missingIntervals,
