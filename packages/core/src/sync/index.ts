@@ -1512,7 +1512,17 @@ export async function* getLocalSyncGenerator({
 
     const endClock = startClock();
 
-    const synced = await historicalSync.sync(interval);
+    const missingIntervals = historicalSync.calculateMissingIntervals({
+      interval,
+    });
+    const sync1Result = await historicalSync.sync1({ missingIntervals });
+    await historicalSync.sync2({
+      interval,
+      missingIntervals,
+      sync1Result,
+    });
+
+    // TODO(kyle) insertIntervals
 
     common.logger.debug({
       service: "sync",
@@ -1522,53 +1532,36 @@ export async function* getLocalSyncGenerator({
     // Update cursor to record progress
     cursor = interval[1] + 1;
 
-    // `synced` will be undefined if a cache hit occur in `historicalSync.sync()`.
-
-    if (synced === undefined) {
-      // If the all known blocks are synced, then update `syncProgress.current`, else
-      // progress to the next iteration.
-      if (interval[1] === hexToNumber(last.number)) {
-        syncProgress.current = last;
-      } else {
-        continue;
-      }
-    } else {
-      if (interval[1] === hexToNumber(last.number)) {
-        syncProgress.current = last;
-      } else {
-        syncProgress.current = synced;
-      }
-
-      const duration = endClock();
-
-      common.metrics.ponder_sync_block.set(
-        label,
-        hexToNumber(syncProgress.current!.number),
-      );
-      common.metrics.ponder_historical_duration.observe(label, duration);
-      common.metrics.ponder_historical_completed_blocks.inc(
-        label,
-        interval[1] - interval[0] + 1,
-      );
-
-      // Use the duration and interval of the last call to `sync` to update estimate
-      // 25 <= estimate(new) <= estimate(prev) * 2 <= 100_000
-      estimateRange = Math.min(
-        Math.max(
-          25,
-          Math.round((1_000 * (interval[1] - interval[0])) / duration),
-        ),
-        estimateRange * 2,
-        100_000,
-      );
-
-      common.logger.trace({
-        service: "sync",
-        msg: `Updated '${chain.name}' historical sync estimate to ${estimateRange} blocks`,
-      });
+    if (interval[1] === hexToNumber(last.number)) {
+      syncProgress.current = last;
     }
 
-    yield hexToNumber(syncProgress.current.number);
+    const duration = endClock();
+
+    common.metrics.ponder_sync_block.set(label, interval[1]);
+    common.metrics.ponder_historical_duration.observe(label, duration);
+    common.metrics.ponder_historical_completed_blocks.inc(
+      label,
+      interval[1] - interval[0] + 1,
+    );
+
+    // Use the duration and interval of the last call to `sync` to update estimate
+    // 25 <= estimate(new) <= estimate(prev) * 2 <= 100_000
+    estimateRange = Math.min(
+      Math.max(
+        25,
+        Math.round((1_000 * (interval[1] - interval[0])) / duration),
+      ),
+      estimateRange * 2,
+      100_000,
+    );
+
+    common.logger.trace({
+      service: "sync",
+      msg: `Updated '${chain.name}' historical sync estimate to ${estimateRange} blocks`,
+    });
+
+    yield interval[1];
 
     if (isSyncEnd(syncProgress) || isSyncFinalized(syncProgress)) {
       common.logger.info({
