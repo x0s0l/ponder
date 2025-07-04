@@ -61,6 +61,7 @@ import {
   toHex,
   zeroHash,
 } from "viem";
+import { moonriver } from "viem/chains";
 
 export type HistoricalSync = {
   intervalsCache: Map<Filter, { fragment: Fragment; intervals: Interval[] }[]>;
@@ -177,11 +178,15 @@ export const createHistoricalSync = async (
   }): Promise<SyncLog[]> => {
     //  Use the recommended range if available, else don't chunk the interval at all.
 
+    const maxChunkSize =
+      args.chain.id === moonriver.id
+        ? 1024
+        : (logsRequestMetadata.confirmedRange ??
+          logsRequestMetadata.estimatedRange);
+
     const intervals = getChunks({
       interval,
-      maxChunkSize:
-        logsRequestMetadata.confirmedRange ??
-        logsRequestMetadata.estimatedRange,
+      maxChunkSize,
     });
 
     const topics =

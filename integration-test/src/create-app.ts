@@ -15,7 +15,9 @@ if (APP_ID === undefined) {
 }
 
 // 1. Create database
-await db.execute(sql.raw(`CREATE DATABASE "${APP_ID}"`));
+try {
+  await db.execute(sql.raw(`CREATE DATABASE "${APP_ID}"`));
+} catch (ex) {}
 
 db = drizzle(`${process.env.DATABASE_URL!}/${APP_ID}`, {
   casing: "snake_case",
@@ -43,7 +45,7 @@ const program = new Command()
   )
   .parse(process.argv);
 
-process.env.DATABASE_SCHEMA = "expected";
+process.env.DATABASE_SCHEMA = process.env.RAILWAY_DEPLOYMENT_ID || "expected_2";
 process.env.DATABASE_URL = `${process.env.DATABASE_URL!}/${APP_ID}`;
 process.env.PONDER_TELEMETRY_DISABLED = "true";
 
