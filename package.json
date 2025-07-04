@@ -12,7 +12,7 @@
     "prepare": "npx simple-git-hooks",
     "test": "pnpm --parallel --no-bail test",
     "typecheck": "pnpm --filter \"./packages/**\" --recursive typecheck",
-    "start": "pnpm run build && cd integration-test && bun run src/create-app.ts moonwell"
+    "start": "cd integration-test && bun run src/create-app.ts moonwell"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

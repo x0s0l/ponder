@@ -546,7 +546,7 @@ importers:
     dependencies:
       forge-std:
         specifier: github:foundry-rs/forge-std
-        version: https://codeload.github.com/foundry-rs/forge-std/tar.gz/f46d8301cf732f4f83846565aa475628265e51e0
+        version: https://codeload.github.com/foundry-rs/forge-std/tar.gz/60acb7aaadcce2d68e52986a0a66fe79f07d138f
 
   examples/with-foundry/ponder:
     dependencies:
@@ -753,6 +753,13 @@ importers:
         version: 5.3.3
 
   integration-test:
+    dependencies:
+      dayjs:
+        specifier: ^1.11.13
+        version: 1.11.13
+      rambda:
+        specifier: ^10.2.0
+        version: 10.2.0
     devDependencies:
       '@commander-js/extra-typings':
         specifier: ^12.0.1
@@ -5883,8 +5890,8 @@ packages:
   forever-agent@0.6.1:
     resolution: {integrity: sha512-j0KLYPhm6zeac4lz3oJ3o65qvgQCcPubiyotZrXqEaG4hNagNYO8qdlUrX5vwqv9ohqeT/Z3j6+yW067yWWdUw==}
 
-  forge-std@https://codeload.github.com/foundry-rs/forge-std/tar.gz/f46d8301cf732f4f83846565aa475628265e51e0:
-    resolution: {tarball: https://codeload.github.com/foundry-rs/forge-std/tar.gz/f46d8301cf732f4f83846565aa475628265e51e0}
+  forge-std@https://codeload.github.com/foundry-rs/forge-std/tar.gz/60acb7aaadcce2d68e52986a0a66fe79f07d138f:
+    resolution: {tarball: https://codeload.github.com/foundry-rs/forge-std/tar.gz/60acb7aaadcce2d68e52986a0a66fe79f07d138f}
     version: 1.9.7
 
   form-data@2.3.3:
@@ -8045,6 +8052,9 @@ packages:
         optional: true
       '@types/react-dom':
         optional: true
+
+  rambda@10.2.0:
+    resolution: {integrity: sha512-+ucs+OgkatwV3MNfV7GO55xVQ8xTHRN1sca7qp6+6lZYmNXw3h+IW9aIjzb4cpoT4dJVHxoJqzEbLCOS3i6CJQ==}
 
   randombytes@2.1.0:
     resolution: {integrity: sha512-vYl3iOX+4CKUWuxGi9Ukhie6fsqXqS9FE2Zaic4tNFD2N2QQaXOMFbuKK4QmDHC0JO6B1Zp41J0LpT0oR68amQ==}
@@ -14784,7 +14794,7 @@ snapshots:
 
   forever-agent@0.6.1: {}
 
-  forge-std@https://codeload.github.com/foundry-rs/forge-std/tar.gz/f46d8301cf732f4f83846565aa475628265e51e0: {}
+  forge-std@https://codeload.github.com/foundry-rs/forge-std/tar.gz/60acb7aaadcce2d68e52986a0a66fe79f07d138f: {}
 
   form-data@2.3.3:
     dependencies:
@@ -17441,6 +17451,8 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.1.3
       '@types/react-dom': 18.2.17
+
+  rambda@10.2.0: {}
 
   randombytes@2.1.0:
     dependencies:

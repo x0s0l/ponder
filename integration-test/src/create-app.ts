@@ -45,7 +45,7 @@ const program = new Command()
   )
   .parse(process.argv);
 
-process.env.DATABASE_SCHEMA = process.env.RAILWAY_DEPLOYMENT_ID || "expected_2";
+process.env.DATABASE_SCHEMA = process.env.RAILWAY_DEPLOYMENT_ID || "expected_3";
 process.env.DATABASE_URL = `${process.env.DATABASE_URL!}/${APP_ID}`;
 process.env.PONDER_TELEMETRY_DISABLED = "true";
 
